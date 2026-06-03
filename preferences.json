@@ -1,0 +1,39 @@
+{
+  "topic_priorities": [
+    "edtech and AI in K-12 education",
+    "curriculum and instructional materials (HQIM, science of reading)",
+    "impact measurement and assessment",
+    "education policy — state and national",
+    "school finance and district economics",
+    "schools doing innovative or great things (examples to uplift)",
+    "big ideas about changes to how schools work",
+    "edtech market dynamics (funding, M&A, vendor landscape)",
+    "mental health and student wellbeing"
+  ],
+  "perspective_balance": "Include center-right perspectives alongside mainstream education coverage. Do not filter to a single political viewpoint.",
+  "geographic_focus": "Prefer stories from large states (FL, CA, TX) as leading indicators for other districts. National trends welcome.",
+  "editorial_guidance": [
+    "Surface stories that expose potential risks on the horizon",
+    "Balance concerning trends with uplifting examples, even at small scale",
+    "Industry reports useful for portfolio companies are high priority",
+    "Macro trends and systems-level issues that affect market conditions"
+  ],
+  "preferred_sources": [
+    "Fordham Institute",
+    "CRPE",
+    "Bellwether",
+    "Eduwonk",
+    "The 74",
+    "Hechinger Report",
+    "Edunomics Lab"
+  ],
+  "recency_window_days": 10,
+  "max_candidates": 35,
+  "portfolio_companies": [
+    "Amplify",
+    "Innovamat"
+  ],
+  "portfolio_advisors": [
+    "Jordan Meranus"
+  ]
+}

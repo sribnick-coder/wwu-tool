@@ -1,0 +1,208 @@
+<!DOCTYPE html>
+<html lang="en">
+<head>
+  <meta charset="UTF-8" />
+  <meta name="viewport" content="width=device-width, initial-scale=1.0" />
+  <title>A-Street Weekly Wrap-Up Tool</title>
+  <link rel="stylesheet" href="/styles.css" />
+  <script src="https://cdn.jsdelivr.net/npm/sortablejs@1.15.3/Sortable.min.js"></script>
+</head>
+<body>
+  <header class="app-header">
+    <div class="header-left">
+      <span class="logo-mark">A·</span>
+      <span class="app-title">Weekly Wrap-Up</span>
+    </div>
+    <nav class="tab-nav">
+      <button class="tab-btn active" data-view="scan">1 · Scan</button>
+      <button class="tab-btn" data-view="draft">2 · Draft</button>
+      <button class="tab-btn" data-view="export">3 · Export</button>
+    </nav>
+    <div class="header-right">
+      <span id="oauth-status" class="oauth-badge"></span>
+    </div>
+  </header>
+
+  <main id="app">
+
+    <!-- ── SCAN VIEW ────────────────────────────────────────────────────────── -->
+    <section id="view-scan" class="view active">
+      <div class="view-toolbar">
+        <div class="toolbar-left">
+          <button id="btn-scan" class="btn btn-primary">Refresh scan</button>
+          <span id="scan-status" class="scan-status-text"></span>
+        </div>
+        <div class="toolbar-right">
+          <input id="manual-url-input" type="url" placeholder="Paste a URL to add manually…" class="url-input" />
+          <button id="btn-add-url" class="btn btn-secondary">Add</button>
+          <input id="filter-source" type="text" placeholder="Filter source…" class="filter-input" />
+          <select id="filter-rank" class="sort-select">
+            <option value="all">All ranks</option>
+            <option value="recommended">★ Recommended only</option>
+            <option value="good">Score 50+</option>
+          </select>
+          <select id="filter-date" class="sort-select">
+            <option value="all">All dates</option>
+            <option value="3">Last 3 days</option>
+            <option value="7">Last 7 days</option>
+          </select>
+        </div>
+      </div>
+      <div class="counter-bar" id="counter-bar" style="display:none">
+        <span class="counter-item" id="cnt-this-week"><span class="counter-dot dot-green"></span>This week: <strong id="n-this-week">0</strong></span>
+        <span class="counter-sep">·</span>
+        <span class="counter-item"><span class="counter-dot dot-blue"></span>Considered: <strong id="n-considered">0</strong></span>
+        <span class="counter-sep">·</span>
+        <span class="counter-item"><span class="counter-dot dot-purple"></span>Save for later: <strong id="n-save">0</strong></span>
+      </div>
+
+      <div id="scan-progress" class="scan-progress hidden">
+        <div class="progress-bar"><div id="progress-fill" class="progress-fill"></div></div>
+        <span id="progress-text">Scanning…</span>
+      </div>
+
+      <div id="article-list" class="article-list">
+        <div class="empty-state">Click <strong>Refresh scan</strong> to fetch articles from all sources.</div>
+      </div>
+
+      <div id="declined-drawer" class="declined-drawer hidden">
+        <button class="declined-handle" id="declined-handle">
+          <span id="declined-label">Declined (0)</span>
+          <span id="declined-arrow" class="drawer-arrow">▲</span>
+        </button>
+        <div id="declined-list" class="declined-list hidden"></div>
+      </div>
+
+      <div class="draft-toolbar" id="draft-toolbar" style="display:none">
+        <div class="toolbar-counts" id="toolbar-counts"></div>
+        <button id="btn-draft" class="btn btn-primary btn-large">Draft &amp; organize →</button>
+      </div>
+    </section>
+
+    <!-- ── DRAFT VIEW ───────────────────────────────────────────────────────── -->
+    <section id="view-draft" class="view">
+      <div class="view-toolbar">
+        <div class="toolbar-left">
+          <button id="btn-back-to-scan" class="btn btn-secondary">← Back</button>
+          <h2 class="draft-week-label" id="draft-week-label">Week of —</h2>
+        </div>
+        <div class="toolbar-right">
+          <button id="btn-summarize-all" class="btn btn-primary">Generate summaries</button>
+          <button id="btn-go-export" class="btn btn-secondary">Export →</button>
+        </div>
+      </div>
+
+      <div class="three-col">
+        <div class="draft-col" id="col-in_this_week">
+          <div class="col-header">
+            <span class="col-title">In this week</span>
+            <span class="col-count" id="count-in_this_week">0</span>
+            <span class="col-warn hidden" id="warn-in_this_week"></span>
+          </div>
+          <div class="entry-list" id="list-in_this_week"></div>
+        </div>
+        <div class="draft-col" id="col-considered">
+          <div class="col-header">
+            <span class="col-title">Considered</span>
+            <span class="col-count" id="count-considered">0</span>
+          </div>
+          <div class="entry-list" id="list-considered"></div>
+        </div>
+        <div class="draft-col" id="col-save_for_future">
+          <div class="col-header">
+            <span class="col-title">Save for future</span>
+            <span class="col-count" id="count-save_for_future">0</span>
+          </div>
+          <div class="entry-list" id="list-save_for_future"></div>
+        </div>
+      </div>
+      <div id="draft-declined-drawer" class="declined-drawer hidden">
+        <button class="declined-handle" id="draft-declined-handle">
+          <span id="draft-declined-label">Declined (0)</span>
+          <span id="draft-declined-arrow" class="drawer-arrow">▲</span>
+        </button>
+        <div id="draft-declined-list" class="declined-list hidden"></div>
+      </div>
+
+      <div id="draft-drop-zone" class="draft-drop-zone">
+        <span>Drag here to decline</span>
+      </div>
+
+    </section>
+
+    <!-- ── EXPORT VIEW ──────────────────────────────────────────────────────── -->
+    <section id="view-export" class="view">
+      <div class="export-panel">
+        <h2>Export</h2>
+        <p class="export-week" id="export-week-label"></p>
+
+        <div class="export-card">
+          <div class="export-card-header">
+            <h3>Google Doc</h3>
+            <p>Creates a formatted doc in the A-Street Drive folder and shares it with Marc and Heather for review.</p>
+          </div>
+          <div id="gdoc-auth-note" class="auth-note hidden">
+            <span>Google Drive not connected. </span>
+            <a id="gdoc-auth-link" href="#" target="_blank">Connect Google Account →</a>
+          </div>
+          <button id="btn-create-gdoc" class="btn btn-primary btn-large">Create Google Doc</button>
+          <div id="gdoc-result" class="export-result hidden"></div>
+        </div>
+
+        <div class="export-card">
+          <div class="export-card-header">
+            <h3>Mailchimp HTML</h3>
+            <p>Copies clean HTML for the "In this week" section. Paste directly into the Mailchimp template.</p>
+          </div>
+          <button id="btn-copy-html" class="btn btn-secondary btn-large">Copy HTML to clipboard</button>
+          <div id="html-copied" class="copy-confirm hidden">Copied!</div>
+        </div>
+
+        <div class="export-card">
+          <div class="export-card-header">
+            <h3>Plain text</h3>
+            <p>Formatted plain text with URLs — useful for Slack or email sharing.</p>
+          </div>
+          <button id="btn-copy-text" class="btn btn-secondary btn-large">Copy plain text</button>
+          <div id="text-copied" class="copy-confirm hidden">Copied!</div>
+        </div>
+      </div>
+    </section>
+
+  </main>
+
+  <!-- ── MODALS ──────────────────────────────────────────────────────────────── -->
+
+  <!-- Paywall modal -->
+  <div id="paywall-modal" class="modal hidden">
+    <div class="modal-backdrop"></div>
+    <div class="modal-box">
+      <button class="modal-close">&times;</button>
+      <h3 class="modal-title">Paywalled article</h3>
+      <p class="modal-subtitle" id="paywall-headline"></p>
+      <div class="paywall-options">
+        <div class="paywall-option">
+          <h4>Option 1 — Paste full text</h4>
+          <p>Open the article in your browser (where you have access), copy the full text, and paste it here.</p>
+          <textarea id="paywall-paste" class="paste-area" placeholder="Paste full article text here…" rows="8"></textarea>
+          <button id="btn-paywall-paste" class="btn btn-primary">Generate summary from text</button>
+        </div>
+        <div class="paywall-option">
+          <h4>Option 2 — Find a free alternative</h4>
+          <p>Search for non-paywalled coverage of the same topic. Your audience may not have access — a free link is more useful.</p>
+          <button id="btn-paywall-search" class="btn btn-secondary">Search for free alternative</button>
+          <div id="paywall-alt-result" class="alt-result hidden"></div>
+        </div>
+        <div class="paywall-option">
+          <h4>Option 3 — Write manually</h4>
+          <p>Type your own summary for this entry.</p>
+          <textarea id="paywall-manual" class="paste-area" placeholder="Write your summary here…" rows="4"></textarea>
+          <button id="btn-paywall-manual" class="btn btn-secondary">Save manual summary</button>
+        </div>
+      </div>
+    </div>
+  </div>
+
+  <script src="/app.js"></script>
+</body>
+</html>

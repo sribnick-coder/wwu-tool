@@ -1,0 +1,24 @@
+{
+  "name": "wwu-tool",
+  "version": "1.0.0",
+  "description": "A-Street Weekly Wrap-Up automation tool",
+  "main": "server.js",
+  "scripts": {
+    "start": "node server.js",
+    "dev": "node --watch server.js"
+  },
+  "engines": {
+    "node": ">=18.0.0"
+  },
+  "dependencies": {
+    "@anthropic-ai/sdk": "^0.52.0",
+    "@supabase/supabase-js": "^2.45.0",
+    "cheerio": "^1.0.0",
+    "dotenv": "^16.6.1",
+    "express": "^4.19.2",
+    "express-basic-auth": "^1.2.1",
+    "googleapis": "^144.0.0",
+    "node-fetch": "^2.7.0",
+    "rss-parser": "^3.13.0"
+  }
+}
