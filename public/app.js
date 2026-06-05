@@ -13,6 +13,10 @@ const state = {
   entries: [],
 
   oauthConnected: false,
+
+  holdovers: [],           // active (non-dismissed) holdover pool items
+  publishedIds: new Set(), // article_ids ever published in_this_week (for badge)
+  recentPublished: [],     // last 4 weeks published entries (for tray)
 };
 
 /* ── API helpers ──────────────────────────────────────────────────────── */
@@ -148,13 +152,26 @@ function hideProgress() {
 
 async function loadLatestArticles(batch) {
   try {
-    const data = batch
-      ? await GET(`/api/articles?batch=${encodeURIComponent(batch)}`)
-      : (await GET('/api/articles/latest')).articles;
+    const [scanData, holdoverData, publishedData] = await Promise.all([
+      batch ? GET(`/api/articles?batch=${encodeURIComponent(batch)}`) : GET('/api/articles/latest'),
+      GET('/api/holdovers').catch(() => []),
+      GET('/api/articles/published?weeks=4').catch(() => ({ allIds: [], recent: [] })),
+    ]);
 
-    state.articles = Array.isArray(data) ? data : (data.articles || []);
-    if (!Array.isArray(data)) state.scanBatch = data.batch;
+    const articles = Array.isArray(scanData) ? scanData : (scanData.articles || []);
+    if (!Array.isArray(scanData)) state.scanBatch = scanData.batch;
+    state.articles = articles;
+    state.holdovers = holdoverData || [];
+    state.publishedIds = new Set(publishedData.allIds || []);
+    state.recentPublished = publishedData.recent || [];
+
+    // Auto-decline published articles (only if not already explicitly assigned)
+    for (const id of state.publishedIds) {
+      if (state.assignments[id] === undefined) state.assignments[id] = 'declined';
+    }
+
     renderArticles();
+    renderPublishedDrawer();
   } catch (err) {
     setStatus(`Could not load articles: ${err.message}`);
   }
@@ -176,7 +193,10 @@ document.getElementById('filter-date').addEventListener('change', e => {
 });
 
 function filteredArticles() {
-  let arts = [...state.articles].filter(a => state.assignments[a.id] !== 'declined');
+  const holdoverIds = new Set(state.holdovers.map(h => h.article_id));
+  let arts = [...state.articles]
+    .filter(a => state.assignments[a.id] !== 'declined')
+    .filter(a => !holdoverIds.has(a.id)); // shown separately at top as holdover cards
   arts.sort((a, b) => (b.relevance_score || 0) - (a.relevance_score || 0));
 
   const { source, rank, date } = state.filters;
@@ -206,9 +226,18 @@ function setAssignment(articleId, section) {
 
 function updateCounterBar() {
   const vals = Object.values(state.assignments);
-  const nThis = vals.filter(v => v === 'this_week').length;
-  const nCons = vals.filter(v => v === 'considered').length;
-  const nSave = vals.filter(v => v === 'save_for_future').length;
+  let nThis = vals.filter(v => v === 'this_week').length;
+  let nCons = vals.filter(v => v === 'considered').length;
+  let nSave = vals.filter(v => v === 'save_for_future').length;
+
+  // Count holdovers that haven't been explicitly reassigned or dismissed
+  for (const h of state.holdovers) {
+    if (!state.assignments[h.article_id]) {
+      if (h.section === 'considered') nCons++;
+      else if (h.section === 'save_for_future') nSave++;
+    }
+  }
+
   const total = nThis + nCons + nSave;
 
   const bar = document.getElementById('counter-bar');
@@ -232,16 +261,31 @@ function syncAssignmentsFromEntries() {
 function renderArticles() {
   const list = document.getElementById('article-list');
   const articles = filteredArticles();
+  const activeHoldovers = state.holdovers.filter(h => state.assignments[h.article_id] !== 'declined');
 
-  if (!state.articles.length) {
+  if (!state.articles.length && !activeHoldovers.length) {
     list.innerHTML = '<div class="empty-state">Click <strong>Refresh scan</strong> to fetch articles from all sources.</div>';
-  } else if (!articles.length) {
-    list.innerHTML = '<div class="empty-state">No articles match the current filters.</div>';
-  } else {
-    list.innerHTML = '';
+    renderDeclinedDrawer();
+    return;
+  }
+
+  list.innerHTML = '';
+
+  // Holdover cards at top
+  for (const h of activeHoldovers) {
+    list.appendChild(buildHoldoverCard(h));
+  }
+
+  // Fresh scan articles below
+  if (articles.length) {
     for (const a of articles) {
       list.appendChild(buildArticleCard(a));
     }
+  } else if (state.articles.length && !activeHoldovers.length) {
+    const empty = document.createElement('div');
+    empty.className = 'empty-state';
+    empty.textContent = 'No articles match the current filters.';
+    list.appendChild(empty);
   }
 
   renderDeclinedDrawer();
@@ -268,10 +312,15 @@ function buildArticleCard(a) {
   ].filter(Boolean).join('');
 
   const score = a.relevance_score != null ? `· Score: ${(a.relevance_score * 100).toFixed(0)}` : '';
+  const publishedEntry = state.recentPublished.find(p => p.article_id === a.id);
+  const publishedBadge = state.publishedIds.has(a.id)
+    ? `<span class="badge badge-published" title="Published in newsletter">${publishedEntry ? `Published Wk ${publishedEntry.week_date}` : 'Published'}</span>`
+    : '';
 
   card.innerHTML = `
     <div class="card-top">
       ${isRecommended ? '<span class="star-badge" title="Recommended">★</span>' : ''}
+      ${publishedBadge}
       <span class="card-headline">${escHtml(a.title)}</span>
     </div>
     <div class="assign-btns">
@@ -298,6 +347,61 @@ function buildArticleCard(a) {
   });
 
   return card;
+}
+
+function buildHoldoverCard(h) {
+  const assignment = state.assignments[h.article_id] || null;
+  const effectiveSection = assignment || h.section;
+  const weeksHeld = Math.floor((Date.now() - new Date(h.first_saved_at)) / (7 * 24 * 60 * 60 * 1000));
+  const sectionLabel = h.section === 'considered' ? 'Considered' : 'Save for later';
+  const colorClass = { this_week: 'sel-green', considered: 'sel-blue', save_for_future: 'sel-purple' }[effectiveSection] || '';
+
+  const card = document.createElement('div');
+  card.className = `article-card holdover-card ${h.section === 'considered' ? 'holdover-considered' : 'holdover-save'} ${colorClass}`;
+  card.dataset.id = h.article_id;
+  card.dataset.holdoverId = h.id;
+
+  card.innerHTML = `
+    <div class="card-top">
+      <span class="badge badge-holdover">${escHtml(sectionLabel)} · ${weeksHeld}w held</span>
+      <span class="card-headline">${escHtml(h.headline)}</span>
+    </div>
+    <div class="assign-btns">
+      <button class="assign-btn ${effectiveSection === 'this_week'      ? 'active-this-week'  : ''}" data-section="this_week">This week</button>
+      <button class="assign-btn ${effectiveSection === 'considered'     ? 'active-considered' : ''}" data-section="considered">Considered</button>
+      <button class="assign-btn ${effectiveSection === 'save_for_future'? 'active-save'       : ''}" data-section="save_for_future">Save for later</button>
+      <button class="assign-btn decline-btn" data-section="dismissed">Dismiss</button>
+    </div>
+    <div class="card-meta">
+      <span>${escHtml(h.source_name || '')}</span>
+      ${weeksHeld >= 4 ? '<span class="dismiss-suggest">· Dismiss suggested</span>' : ''}
+    </div>
+    ${h.summary ? `<div class="card-preview">${escHtml(h.summary)}</div>` : ''}
+  `;
+
+  card.querySelectorAll('.assign-btn').forEach(btn => {
+    btn.addEventListener('click', e => {
+      e.stopPropagation();
+      if (btn.dataset.section === 'dismissed') {
+        dismissHoldoverFromScan(h.id, h.article_id, card);
+      } else {
+        setAssignment(h.article_id, btn.dataset.section);
+      }
+    });
+  });
+
+  return card;
+}
+
+function dismissHoldoverFromScan(holdoverId, articleId, card) {
+  // Remove from active holdovers
+  state.holdovers = state.holdovers.filter(h => h.id !== holdoverId);
+  card.remove();
+  updateCounterBar();
+  updateDraftToolbar();
+  // Persist to server and refresh dismissed tray
+  POST(`/api/holdover/${holdoverId}/dismiss`, {}).catch(() => {});
+  if (dismissedDrawerOpen) loadAndRenderDismissedDrawer();
 }
 
 // ── Declined drawer ───────────────────────────────────────────────────────
@@ -347,22 +451,115 @@ document.getElementById('declined-handle').addEventListener('click', () => {
   document.getElementById('declined-arrow').classList.toggle('open', drawerOpen);
 });
 
+// ── Published drawer ──────────────────────────────────────────────────────
+
+let publishedDrawerOpen = false;
+
+function renderPublishedDrawer() {
+  const drawer = document.getElementById('published-drawer');
+  const label  = document.getElementById('published-label');
+  const list   = document.getElementById('published-list');
+
+  if (!state.recentPublished.length) { drawer.classList.add('hidden'); return; }
+
+  drawer.classList.remove('hidden');
+  label.textContent = `Published — last 4 weeks (${state.recentPublished.length})`;
+
+  if (!publishedDrawerOpen) return;
+
+  list.innerHTML = '';
+  const seen = new Set();
+  for (const p of state.recentPublished) {
+    if (seen.has(p.article_id)) continue;
+    seen.add(p.article_id);
+    const card = document.createElement('div');
+    card.className = 'declined-card';
+    card.innerHTML = `
+      <div class="declined-card-title">${escHtml(p.headline)}</div>
+      <div class="declined-card-meta">${escHtml(p.source_name || '')} · Wk ${escHtml(p.week_date || '')}</div>
+    `;
+    list.appendChild(card);
+  }
+}
+
+document.getElementById('published-handle').addEventListener('click', () => {
+  publishedDrawerOpen = !publishedDrawerOpen;
+  document.getElementById('published-list').classList.toggle('hidden', !publishedDrawerOpen);
+  document.getElementById('published-arrow').classList.toggle('open', publishedDrawerOpen);
+  if (publishedDrawerOpen) renderPublishedDrawer();
+});
+
+// ── Dismissed holdovers drawer ────────────────────────────────────────────
+
+let dismissedDrawerOpen = false;
+
+async function loadAndRenderDismissedDrawer() {
+  const list = document.getElementById('dismissed-list');
+  list.innerHTML = '<div style="padding:8px;color:var(--text-muted);font-size:12px">Loading…</div>';
+  try {
+    const dismissed = await GET('/api/holdovers/dismissed');
+    list.innerHTML = '';
+    if (!dismissed.length) {
+      list.innerHTML = '<div style="padding:8px;color:var(--text-muted);font-size:12px">Nothing dismissed yet.</div>';
+      return;
+    }
+    for (const h of dismissed) {
+      const card = document.createElement('div');
+      card.className = 'declined-card';
+      const weeksAgo = Math.floor((Date.now() - new Date(h.dismissed_at)) / (7 * 24 * 60 * 60 * 1000));
+      card.innerHTML = `
+        <div class="declined-card-title">${escHtml(h.headline)}</div>
+        <div class="declined-card-meta">${escHtml(h.source_name || '')} · dismissed ${weeksAgo}w ago</div>
+        <button class="btn btn-secondary" style="font-size:11px;padding:3px 10px;margin-top:4px" data-restore-holdover="${h.id}">Restore</button>
+      `;
+      card.querySelector('[data-restore-holdover]').addEventListener('click', async () => {
+        await POST(`/api/holdover/${h.id}/restore`, {}).catch(() => {});
+        const fresh = await GET('/api/holdovers').catch(() => []);
+        state.holdovers = fresh;
+        renderArticles();
+        updateCounterBar();
+        updateDraftToolbar();
+        loadAndRenderDismissedDrawer();
+      });
+      list.appendChild(card);
+    }
+  } catch {
+    list.innerHTML = '<div style="padding:8px;color:var(--text-muted);font-size:12px">Could not load dismissed items.</div>';
+  }
+}
+
+document.getElementById('dismissed-handle').addEventListener('click', () => {
+  dismissedDrawerOpen = !dismissedDrawerOpen;
+  const list = document.getElementById('dismissed-list');
+  list.classList.toggle('hidden', !dismissedDrawerOpen);
+  document.getElementById('dismissed-arrow').classList.toggle('open', dismissedDrawerOpen);
+  if (dismissedDrawerOpen) loadAndRenderDismissedDrawer();
+  document.getElementById('dismissed-drawer').classList.remove('hidden');
+});
+
 // ── Draft toolbar ─────────────────────────────────────────────────────────
 
 function updateDraftToolbar() {
   const vals = Object.values(state.assignments);
-  const total = vals.filter(v => v !== 'declined').length;
+  let nThis = vals.filter(v => v === 'this_week').length;
+  let nCons = vals.filter(v => v === 'considered').length;
+  let nSave = vals.filter(v => v === 'save_for_future').length;
+
+  for (const h of state.holdovers) {
+    if (!state.assignments[h.article_id]) {
+      if (h.section === 'considered') nCons++;
+      else if (h.section === 'save_for_future') nSave++;
+    }
+  }
+
   const toolbar = document.getElementById('draft-toolbar');
 
-  if (total === 0) {
+  if (nThis + nCons + nSave === 0) {
     toolbar.style.display = 'none';
     return;
   }
 
   toolbar.style.display = 'flex';
-  const nThis = vals.filter(v => v === 'this_week').length;
-  const nCons = vals.filter(v => v === 'considered').length;
-  const nSave = vals.filter(v => v === 'save_for_future').length;
 
   document.getElementById('toolbar-counts').innerHTML = [
     nThis ? `<span><span class="counter-dot dot-green"></span> This week: <strong>${nThis}</strong></span>` : '',
@@ -409,12 +606,20 @@ async function addManualUrl() {
 // ── Draft & organize ──────────────────────────────────────────────────────
 
 document.getElementById('btn-draft').addEventListener('click', async () => {
-  const assignments = Object.entries(state.assignments)
+  const explicitAssignments = Object.entries(state.assignments)
     .filter(([, section]) => section !== 'declined')
     .map(([articleId, section]) => ({
       articleId,
       section: section === 'this_week' ? 'in_this_week' : section,
     }));
+
+  // Auto-include holdovers not explicitly reassigned or dismissed
+  const explicitIds = new Set(Object.keys(state.assignments));
+  const holdoverCarryOvers = state.holdovers
+    .filter(h => !explicitIds.has(h.article_id))
+    .map(h => ({ articleId: h.article_id, section: h.section }));
+
+  const assignments = [...explicitAssignments, ...holdoverCarryOvers];
 
   if (!assignments.length) return;
 
@@ -456,7 +661,12 @@ function refreshDraftView() {
 
 async function loadLatestDraft() {
   try {
-    const drafts = await GET('/api/drafts');
+    const [drafts, holdoverData] = await Promise.all([
+      GET('/api/drafts'),
+      GET('/api/holdovers').catch(() => []),
+    ]);
+    state.holdovers = holdoverData || [];
+
     if (drafts?.length) {
       const latest = drafts[0];
       const full = await GET(`/api/draft/${latest.week_date}`);
@@ -616,6 +826,14 @@ function buildConsideredEntry(entry) {
     entry.is_paywalled         ? '<span class="badge badge-paywall"   style="font-size:10px">Paywall</span>'          : '',
   ].filter(Boolean).join('');
 
+  const holdover = state.holdovers.find(h => h.article_id === entry.article_id);
+  const weeksHeld = holdover
+    ? Math.floor((Date.now() - new Date(holdover.first_saved_at)) / (7 * 24 * 60 * 60 * 1000))
+    : 0;
+  const dismissBtn = holdover && weeksHeld >= 4
+    ? `<button class="btn-dismiss-entry" data-action="dismiss" title="Held ${weeksHeld} weeks — dismiss from future holdovers">Dismiss ×</button>`
+    : '';
+
   card.innerHTML = `
     <div class="entry-card-top drag-zone">
       <span class="drag-handle" title="Drag to reorder">⠿</span>
@@ -627,7 +845,10 @@ function buildConsideredEntry(entry) {
       <a class="entry-source-link" href="${escHtml(entry.article_url || '#')}" target="_blank" rel="noopener">
         (${escHtml(entry.source_name || 'Source')})
       </a>
-      ${badges ? `<div style="display:flex;gap:4px">${badges}</div>` : ''}
+      <div style="display:flex;gap:4px;align-items:center">
+        ${badges}
+        ${dismissBtn}
+      </div>
     </div>
   `;
 
@@ -643,6 +864,12 @@ function buildConsideredEntry(entry) {
 
   card.querySelector('[data-action="regen"]')?.addEventListener('click', () => regenerateEntry(entry.id));
 
+  if (holdover && weeksHeld >= 4) {
+    card.querySelector('[data-action="dismiss"]')?.addEventListener('click', () => {
+      dismissFromDraft(entry.id, holdover.id);
+    });
+  }
+
   return card;
 }
 
@@ -651,19 +878,38 @@ function buildSaveEntry(entry) {
   card.className = 'entry-card entry-card--save';
   card.dataset.id = entry.id;
 
-  const pubDate = entry.published_at
-    ? new Date(entry.published_at).toLocaleDateString('en-US', { month: 'short', day: 'numeric' })
-    : '';
+  const holdover = state.holdovers.find(h => h.article_id === entry.article_id);
+  const weeksHeld = holdover
+    ? Math.floor((Date.now() - new Date(holdover.first_saved_at)) / (7 * 24 * 60 * 60 * 1000))
+    : 0;
 
   card.innerHTML = `
     <span class="drag-handle drag-zone" title="Drag to reorder">⠿</span>
     <div class="entry-save-text drag-zone">
       <div class="entry-save-title">${escHtml(entry.headline)}</div>
-      <div class="entry-save-meta">${escHtml(entry.source_name || '')}${pubDate ? ' · ' + pubDate : ''}</div>
+      <div class="entry-save-meta">${escHtml(entry.source_name || '')}${weeksHeld > 0 ? ` · ${weeksHeld}w held` : ''}</div>
     </div>
+    ${holdover && weeksHeld >= 4
+      ? `<button class="btn-dismiss-entry" data-action="dismiss" title="Held ${weeksHeld} weeks — dismiss">×</button>`
+      : ''}
   `;
 
+  if (holdover && weeksHeld >= 4) {
+    card.querySelector('[data-action="dismiss"]')?.addEventListener('click', e => {
+      e.stopPropagation();
+      dismissFromDraft(entry.id, holdover.id);
+    });
+  }
+
   return card;
+}
+
+function dismissFromDraft(entryId, holdoverId) {
+  draftDeclined.add(entryId);
+  document.querySelector(`.entry-card[data-id="${entryId}"]`)?.remove();
+  state.holdovers = state.holdovers.filter(h => h.id !== holdoverId);
+  updateColCounts();
+  POST(`/api/holdover/${holdoverId}/dismiss`, {}).catch(() => {});
 }
 
 // ── Auto-summarize on draft load ──────────────────────────────────────────
@@ -799,6 +1045,65 @@ document.getElementById('draft-declined-handle').addEventListener('click', () =>
 });
 
 document.getElementById('btn-back-to-scan').addEventListener('click', () => showView('scan'));
+
+// ── Dismiss old holdovers modal ───────────────────────────────────────────
+
+document.getElementById('btn-dismiss-old').addEventListener('click', async () => {
+  const { count } = await GET('/api/holdovers/dismiss-count?weeks=4').catch(() => ({ count: 0 }));
+  if (count === 0) {
+    const statusEl = document.getElementById('draft-gen-status');
+    statusEl.textContent = 'No holdovers older than 4 weeks.';
+    statusEl.classList.remove('hidden');
+    setTimeout(() => statusEl.classList.add('hidden'), 2500);
+    return;
+  }
+  document.getElementById('dismiss-old-count').textContent = count;
+  document.getElementById('dismiss-old-plural').textContent = count === 1 ? '' : 's';
+  document.getElementById('dismiss-old-modal').classList.remove('hidden');
+});
+
+document.getElementById('btn-dismiss-old-cancel').addEventListener('click', () => {
+  document.getElementById('dismiss-old-modal').classList.add('hidden');
+});
+
+document.getElementById('dismiss-old-modal').querySelector('.modal-backdrop')
+  ?.addEventListener('click', () => document.getElementById('dismiss-old-modal').classList.add('hidden'));
+
+document.getElementById('btn-dismiss-old-confirm').addEventListener('click', async () => {
+  const btn = document.getElementById('btn-dismiss-old-confirm');
+  btn.disabled = true;
+  btn.textContent = 'Dismissing…';
+
+  try {
+    const { dismissed } = await POST('/api/holdovers/dismiss-old', { weeks: 4 });
+
+    // Remove dismissed holdovers from state and draft view
+    const cutoff = new Date();
+    cutoff.setDate(cutoff.getDate() - 28);
+    const oldHoldovers = state.holdovers.filter(h => new Date(h.first_saved_at) < cutoff);
+    for (const h of oldHoldovers) {
+      const entry = state.entries.find(e => e.article_id === h.article_id);
+      if (entry) draftDeclined.add(entry.id);
+    }
+    state.holdovers = state.holdovers.filter(h => new Date(h.first_saved_at) >= cutoff);
+
+    renderSection('considered');
+    renderSection('save_for_future');
+    updateColCounts();
+
+    document.getElementById('dismiss-old-modal').classList.add('hidden');
+
+    const statusEl = document.getElementById('draft-gen-status');
+    statusEl.textContent = `Dismissed ${dismissed} old item${dismissed !== 1 ? 's' : ''}.`;
+    statusEl.classList.remove('hidden');
+    setTimeout(() => statusEl.classList.add('hidden'), 3000);
+  } catch (err) {
+    alert(`Could not dismiss: ${err.message}`);
+  } finally {
+    btn.disabled = false;
+    btn.textContent = 'Yes, dismiss them';
+  }
+});
 
 function initSortables() {
   const sections = ['in_this_week', 'considered', 'save_for_future'];
@@ -1106,14 +1411,27 @@ function escHtml(str) {
 
 (async function init() {
   await checkOAuthStatus();
-  // Load latest scan if available
   try {
-    const { batch, articles } = await GET('/api/articles/latest');
-    if (articles?.length) {
-      state.articles = articles;
-      state.scanBatch = batch;
-      setStatus(`Showing last scan — ${articles.length} articles.`);
-      renderArticles();
+    const [scanData, holdoverData, publishedData] = await Promise.all([
+      GET('/api/articles/latest'),
+      GET('/api/holdovers').catch(() => []),
+      GET('/api/articles/published?weeks=4').catch(() => ({ allIds: [], recent: [] })),
+    ]);
+    state.holdovers = holdoverData || [];
+    state.publishedIds = new Set(publishedData.allIds || []);
+    state.recentPublished = publishedData.recent || [];
+
+    if (scanData.articles?.length) {
+      state.articles = scanData.articles;
+      state.scanBatch = scanData.batch;
+      // Auto-decline published articles
+      for (const id of state.publishedIds) {
+        if (state.assignments[id] === undefined) state.assignments[id] = 'declined';
+      }
+      setStatus(`Showing last scan — ${scanData.articles.length} articles.`);
     }
+
+    renderArticles();
+    renderPublishedDrawer();
   } catch {}
 })();

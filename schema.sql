@@ -65,3 +65,26 @@ CREATE INDEX IF NOT EXISTS idx_articles_scan_batch ON articles(scan_batch);
 CREATE INDEX IF NOT EXISTS idx_articles_scanned_at ON articles(scanned_at DESC);
 CREATE INDEX IF NOT EXISTS idx_draft_entries_draft_id ON draft_entries(draft_id);
 CREATE INDEX IF NOT EXISTS idx_draft_entries_section ON draft_entries(draft_id, section, position);
+
+-- ── MIGRATION: run in Supabase SQL editor to enable multi-week holdover features ──
+
+-- Articles that have been held in Considered or Save for later across weeks.
+-- One row per article; section/dismissed_at update as the article moves.
+CREATE TABLE IF NOT EXISTS holdover_pool (
+  id UUID PRIMARY KEY DEFAULT gen_random_uuid(),
+  article_id UUID REFERENCES articles(id) ON DELETE CASCADE,
+  headline TEXT NOT NULL,
+  source_name TEXT,
+  article_url TEXT,
+  summary TEXT,
+  is_portfolio_flagged BOOLEAN DEFAULT false,
+  is_paywalled BOOLEAN DEFAULT false,
+  section TEXT NOT NULL CHECK (section IN ('considered', 'save_for_future')),
+  first_saved_at TIMESTAMPTZ NOT NULL DEFAULT NOW(),
+  dismissed_at TIMESTAMPTZ,
+  created_at TIMESTAMPTZ DEFAULT NOW(),
+  updated_at TIMESTAMPTZ DEFAULT NOW(),
+  UNIQUE(article_id)
+);
+
+CREATE INDEX IF NOT EXISTS idx_holdover_active ON holdover_pool(first_saved_at) WHERE dismissed_at IS NULL;

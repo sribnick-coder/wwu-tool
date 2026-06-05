@@ -73,6 +73,22 @@
         <div id="declined-list" class="declined-list hidden"></div>
       </div>
 
+      <div id="published-drawer" class="declined-drawer hidden">
+        <button class="declined-handle" id="published-handle">
+          <span id="published-label">Published (0)</span>
+          <span id="published-arrow" class="drawer-arrow">▲</span>
+        </button>
+        <div id="published-list" class="declined-list hidden"></div>
+      </div>
+
+      <div id="dismissed-drawer" class="declined-drawer">
+        <button class="declined-handle" id="dismissed-handle">
+          <span id="dismissed-label">Dismissed holdovers</span>
+          <span id="dismissed-arrow" class="drawer-arrow">▲</span>
+        </button>
+        <div id="dismissed-list" class="declined-list hidden"></div>
+      </div>
+
       <div class="draft-toolbar" id="draft-toolbar" style="display:none">
         <div class="toolbar-counts" id="toolbar-counts"></div>
         <button id="btn-draft" class="btn btn-primary btn-large">Draft &amp; organize →</button>
@@ -88,6 +104,7 @@
         </div>
         <div class="toolbar-right">
           <span id="draft-gen-status" class="gen-status hidden"></span>
+          <button id="btn-dismiss-old" class="btn btn-secondary">Dismiss old holdovers…</button>
           <button id="btn-summarize-all" class="btn btn-secondary">↻ Regenerate all</button>
           <button id="btn-go-export" class="btn btn-primary">Export →</button>
         </div>
@@ -207,6 +224,19 @@
           <textarea id="paywall-manual" class="paste-area" placeholder="Write your summary here…" rows="4"></textarea>
           <button id="btn-paywall-manual" class="btn btn-secondary">Save manual summary</button>
         </div>
+      </div>
+    </div>
+  </div>
+
+  <!-- Dismiss old holdovers modal -->
+  <div id="dismiss-old-modal" class="modal hidden">
+    <div class="modal-backdrop"></div>
+    <div class="modal-box modal-box--narrow">
+      <h3 class="modal-title">Dismiss old holdovers?</h3>
+      <p class="modal-body">This will dismiss <strong id="dismiss-old-count">0</strong> item<span id="dismiss-old-plural">s</span> that have been held for more than 4 weeks. They'll move to the Dismissed tray and won't carry into future weeks.</p>
+      <div class="modal-actions">
+        <button id="btn-dismiss-old-confirm" class="btn btn-danger">Yes, dismiss them</button>
+        <button id="btn-dismiss-old-cancel" class="btn btn-secondary">Cancel</button>
       </div>
     </div>
   </div>

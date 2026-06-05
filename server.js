@@ -196,6 +196,38 @@ app.get('/api/articles', async (req, res) => {
   res.json(data);
 });
 
+// Published article IDs (for badge) + recent list (for tray)
+app.get('/api/articles/published', async (req, res) => {
+  try {
+    const weeks = parseInt(req.query.weeks || '4', 10);
+    const cutoff = new Date();
+    cutoff.setDate(cutoff.getDate() - weeks * 7);
+
+    const { data: entries, error } = await supabase
+      .from('draft_entries')
+      .select('article_id, headline, source_name, article_url, draft_id')
+      .eq('section', 'in_this_week')
+      .not('article_id', 'is', null);
+
+    if (error || !entries?.length) return res.json({ allIds: [], recent: [] });
+
+    const draftIds = [...new Set(entries.map(e => e.draft_id))];
+    const { data: drafts } = await supabase
+      .from('drafts').select('id, week_date').in('id', draftIds);
+
+    const dateMap = Object.fromEntries((drafts || []).map(d => [d.id, d.week_date]));
+    const withDates = entries.map(e => ({ ...e, week_date: dateMap[e.draft_id] }));
+    const allIds = [...new Set(withDates.map(e => e.article_id))];
+    const recent = withDates
+      .filter(e => e.week_date && new Date(e.week_date) >= cutoff)
+      .sort((a, b) => new Date(b.week_date) - new Date(a.week_date));
+
+    res.json({ allIds, recent });
+  } catch {
+    res.json({ allIds: [], recent: [] });
+  }
+});
+
 // Latest scan batch
 app.get('/api/articles/latest', async (req, res) => {
   const { data, error } = await supabase
@@ -365,6 +397,29 @@ app.post('/api/draft', async (req, res) => {
     await supabase.from('draft_entries').insert(newEntries);
   }
 
+  // Sync holdover pool
+  try {
+    const now = new Date().toISOString();
+    const holdoverOps = articles.map(a => {
+      const section = sectionMap[a.id];
+      if (section === 'in_this_week') {
+        return supabase.from('holdover_pool').delete().eq('article_id', a.id);
+      } else if (section === 'considered' || section === 'save_for_future') {
+        return supabase.from('holdover_pool').upsert({
+          article_id: a.id,
+          headline: a.title,
+          source_name: a.source_name,
+          article_url: a.url,
+          section,
+          dismissed_at: null,
+          updated_at: now,
+        }, { onConflict: 'article_id' });
+      }
+      return null;
+    }).filter(Boolean);
+    if (holdoverOps.length) await Promise.all(holdoverOps);
+  } catch {} // graceful if holdover_pool table not yet created
+
   // Return full draft
   const { data: entries } = await supabase
     .from('draft_entries')
@@ -398,10 +453,48 @@ app.post('/api/draft/reorder', async (req, res) => {
   const { updates } = req.body; // [{ id, section, position }]
   if (!updates?.length) return res.status(400).json({ error: 'No updates' });
 
-  const promises = updates.map(u =>
-    supabase.from('draft_entries').update({ section: u.section, position: u.position, updated_at: new Date().toISOString() }).eq('id', u.id)
-  );
-  await Promise.all(promises);
+  const newSectionMap = Object.fromEntries(updates.map(u => [u.id, u.section]));
+
+  // Read current sections before updating (needed to detect section changes for holdover sync)
+  let beforeEntries = [];
+  try {
+    const { data } = await supabase
+      .from('draft_entries')
+      .select('id, article_id, section, headline, source_name, article_url')
+      .in('id', updates.map(u => u.id));
+    beforeEntries = data || [];
+  } catch {}
+
+  await Promise.all(updates.map(u =>
+    supabase.from('draft_entries')
+      .update({ section: u.section, position: u.position, updated_at: new Date().toISOString() })
+      .eq('id', u.id)
+  ));
+
+  // Sync holdover pool for section changes
+  try {
+    const ops = beforeEntries
+      .filter(e => e.article_id && newSectionMap[e.id] !== e.section)
+      .map(e => {
+        const newSection = newSectionMap[e.id];
+        if (newSection === 'in_this_week') {
+          return supabase.from('holdover_pool').delete().eq('article_id', e.article_id);
+        } else if (newSection === 'considered' || newSection === 'save_for_future') {
+          return supabase.from('holdover_pool').upsert({
+            article_id: e.article_id,
+            headline: e.headline,
+            source_name: e.source_name,
+            article_url: e.article_url,
+            section: newSection,
+            dismissed_at: null,
+            updated_at: new Date().toISOString(),
+          }, { onConflict: 'article_id' });
+        }
+        return null;
+      }).filter(Boolean);
+    if (ops.length) await Promise.all(ops);
+  } catch {}
+
   res.json({ ok: true });
 });
 
@@ -433,6 +526,72 @@ app.post('/api/draft/:weekDate/entry/manual', async (req, res) => {
 
   if (error) return res.status(500).json({ error: error.message });
   res.json(data);
+});
+
+// ── Holdover Pool ─────────────────────────────────────────────────────────────
+
+app.get('/api/holdovers', async (req, res) => {
+  try {
+    const { data, error } = await supabase
+      .from('holdover_pool').select('*').is('dismissed_at', null)
+      .order('first_saved_at', { ascending: true });
+    res.json(error ? [] : (data || []));
+  } catch { res.json([]); }
+});
+
+app.get('/api/holdovers/dismissed', async (req, res) => {
+  try {
+    const { data, error } = await supabase
+      .from('holdover_pool').select('*').not('dismissed_at', 'is', null)
+      .order('dismissed_at', { ascending: false }).limit(60);
+    res.json(error ? [] : (data || []));
+  } catch { res.json([]); }
+});
+
+app.get('/api/holdovers/dismiss-count', async (req, res) => {
+  try {
+    const weeks = parseInt(req.query.weeks || '4', 10);
+    const cutoff = new Date();
+    cutoff.setDate(cutoff.getDate() - weeks * 7);
+    const { count, error } = await supabase
+      .from('holdover_pool').select('*', { count: 'exact', head: true })
+      .is('dismissed_at', null).lt('first_saved_at', cutoff.toISOString());
+    res.json({ count: error ? 0 : (count || 0) });
+  } catch { res.json({ count: 0 }); }
+});
+
+app.post('/api/holdover/:id/dismiss', async (req, res) => {
+  try {
+    const { error } = await supabase.from('holdover_pool')
+      .update({ dismissed_at: new Date().toISOString(), updated_at: new Date().toISOString() })
+      .eq('id', req.params.id);
+    if (error) return res.status(500).json({ error: error.message });
+    res.json({ ok: true });
+  } catch (err) { res.status(500).json({ error: err.message }); }
+});
+
+app.post('/api/holdover/:id/restore', async (req, res) => {
+  try {
+    const { error } = await supabase.from('holdover_pool')
+      .update({ dismissed_at: null, updated_at: new Date().toISOString() })
+      .eq('id', req.params.id);
+    if (error) return res.status(500).json({ error: error.message });
+    res.json({ ok: true });
+  } catch (err) { res.status(500).json({ error: err.message }); }
+});
+
+app.post('/api/holdovers/dismiss-old', async (req, res) => {
+  try {
+    const weeks = parseInt(req.body.weeks || '4', 10);
+    const cutoff = new Date();
+    cutoff.setDate(cutoff.getDate() - weeks * 7);
+    const { data, error } = await supabase.from('holdover_pool')
+      .update({ dismissed_at: new Date().toISOString(), updated_at: new Date().toISOString() })
+      .is('dismissed_at', null).lt('first_saved_at', cutoff.toISOString())
+      .select('id');
+    if (error) return res.status(500).json({ error: error.message });
+    res.json({ dismissed: data?.length || 0 });
+  } catch (err) { res.status(500).json({ error: err.message }); }
 });
 
 // ── Summarization ─────────────────────────────────────────────────────────────

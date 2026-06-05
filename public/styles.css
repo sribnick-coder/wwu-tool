@@ -930,3 +930,70 @@ html, body {
 ::-webkit-scrollbar-track { background: transparent; }
 ::-webkit-scrollbar-thumb { background: #d0d0d0; border-radius: 99px; }
 ::-webkit-scrollbar-thumb:hover { background: #aaa; }
+
+/* ── Published badge ─────────────────────────────────────────────────────── */
+.badge-published {
+  display: inline-block;
+  font-size: 10px;
+  font-weight: 700;
+  padding: 2px 7px;
+  border-radius: 99px;
+  background: var(--green-light);
+  color: var(--green-dark);
+  border: 1px solid var(--green);
+  white-space: nowrap;
+  flex-shrink: 0;
+}
+
+/* ── Holdover cards ──────────────────────────────────────────────────────── */
+.holdover-card {
+  border-left: 3px solid transparent;
+}
+.holdover-considered { border-left-color: #3b82f6; }
+.holdover-save       { border-left-color: #8b5cf6; }
+
+.badge-holdover {
+  display: inline-block;
+  font-size: 10px;
+  font-weight: 700;
+  padding: 2px 7px;
+  border-radius: 99px;
+  background: var(--blue);
+  color: #1d4ed8;
+  border: 1px solid var(--blue-border);
+  white-space: nowrap;
+  flex-shrink: 0;
+}
+.holdover-save .badge-holdover {
+  background: #ede9fe;
+  color: #6d28d9;
+  border-color: #8b5cf6;
+}
+
+.dismiss-suggest {
+  font-size: 11px;
+  color: #b45309;
+  font-style: italic;
+}
+
+/* ── Dismiss button on draft entry cards ─────────────────────────────────── */
+.btn-dismiss-entry {
+  font-size: 10.5px;
+  padding: 2px 7px;
+  border-radius: 99px;
+  border: 1px solid #fca5a5;
+  background: var(--white);
+  color: #b91c1c;
+  cursor: pointer;
+  font-family: var(--font);
+  font-weight: 600;
+  white-space: nowrap;
+  flex-shrink: 0;
+  transition: background 0.12s;
+}
+.btn-dismiss-entry:hover { background: var(--red-light); }
+
+/* ── Dismiss confirm modal ───────────────────────────────────────────────── */
+.modal-box--narrow { max-width: 400px; }
+.modal-body { font-size: 13px; line-height: 1.6; color: var(--text); margin: 10px 0 0; }
+.modal-actions { display: flex; gap: 8px; margin-top: 20px; }
