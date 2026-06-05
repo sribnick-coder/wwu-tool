@@ -242,7 +242,10 @@ function buildArticleCard(a) {
   const isRecommended = (a.relevance_score || 0) >= 0.70 || a.is_portfolio_flagged;
 
   const card = document.createElement('div');
-  card.className = 'article-card' + (assignment && assignment !== 'declined' ? ' selected' : '');
+  const colorClass = assignment && assignment !== 'declined'
+    ? { this_week: 'sel-green', considered: 'sel-blue', save_for_future: 'sel-purple' }[assignment] || ''
+    : '';
+  card.className = 'article-card' + (colorClass ? ' ' + colorClass : '');
   card.dataset.id = a.id;
 
   const pubDate = a.published_at
@@ -261,6 +264,12 @@ function buildArticleCard(a) {
       ${isRecommended ? '<span class="star-badge" title="Recommended">★</span>' : ''}
       <span class="card-headline">${escHtml(a.title)}</span>
     </div>
+    <div class="assign-btns">
+      <button class="assign-btn ${assignment === 'this_week' ? 'active-this-week' : ''}"     data-section="this_week">This week</button>
+      <button class="assign-btn ${assignment === 'considered' ? 'active-considered' : ''}"   data-section="considered">Considered</button>
+      <button class="assign-btn ${assignment === 'save_for_future' ? 'active-save' : ''}"    data-section="save_for_future">Save for later</button>
+      <button class="assign-btn decline-btn" data-section="declined">Decline</button>
+    </div>
     <div class="card-meta">
       <span>${escHtml(a.source_name)}</span>
       ${pubDate ? `<span>·</span><span>${pubDate}</span>` : ''}
@@ -269,12 +278,6 @@ function buildArticleCard(a) {
     </div>
     ${a.preview ? `<div class="card-preview">${escHtml(a.preview)}</div>` : ''}
     ${tags ? `<div class="card-tags">${tags}</div>` : ''}
-    <div class="assign-btns">
-      <button class="assign-btn ${assignment === 'this_week' ? 'active-this-week' : ''}"     data-section="this_week">This week</button>
-      <button class="assign-btn ${assignment === 'considered' ? 'active-considered' : ''}"   data-section="considered">Considered</button>
-      <button class="assign-btn ${assignment === 'save_for_future' ? 'active-save' : ''}"    data-section="save_for_future">Save for later</button>
-      <button class="assign-btn decline-btn" data-section="declined">Decline</button>
-    </div>
   `;
 
   card.querySelectorAll('.assign-btn').forEach(btn => {
@@ -425,14 +428,15 @@ document.getElementById('btn-draft').addEventListener('click', async () => {
 
 /* ── DRAFT VIEW ──────────────────────────────────────────────────────── */
 
-// Local-session set of entry IDs declined in the draft view
+// Local-session set of entry IDs declined or approved in the draft view
 const draftDeclined = new Set();
+const draftApproved = new Set();
 
 let sortables = {};
+let lastAutoSummarizedDate = null;
 
 function refreshDraftView() {
   if (!state.currentDraftDate) {
-    // Try to load the most recent draft
     loadLatestDraft();
     return;
   }
@@ -466,6 +470,9 @@ function renderDraft() {
   renderSection('save_for_future');
   updateColCounts();
   initSortables();
+
+  // Auto-generate any missing summaries on first load
+  autoSummarize();
 }
 
 function renderSection(section) {
@@ -473,7 +480,7 @@ function renderSection(section) {
   list.innerHTML = '';
 
   const entries = state.entries
-    .filter(e => e.section === section)
+    .filter(e => e.section === section && !draftDeclined.has(e.id))
     .sort((a, b) => a.position - b.position);
 
   for (const entry of entries) {
@@ -481,30 +488,53 @@ function renderSection(section) {
   }
 }
 
+// ── Card builders (section-aware) ─────────────────────────────────────────
+
 function buildEntryCard(entry) {
+  if (entry.section === 'in_this_week') return buildMainEntry(entry);
+  if (entry.section === 'considered')   return buildConsideredEntry(entry);
+  return buildSaveEntry(entry);
+}
+
+function buildMainEntry(entry) {
   const card = document.createElement('div');
-  card.className = 'entry-card';
+  card.className = 'entry-card entry-card--main';
   card.dataset.id = entry.id;
 
-  const badges = [
-    entry.is_portfolio_flagged ? '<span class="badge badge-portfolio">Portfolio</span>' : '',
-    entry.is_paywalled ? '<span class="badge badge-paywall">Paywall</span>' : '',
-  ].filter(Boolean).join('');
+  const portfolioBadge = entry.is_portfolio_flagged
+    ? '<span class="badge badge-portfolio">&#9830; Portfolio</span>' : '';
+  const paywallBadge = entry.is_paywalled
+    ? '<span class="badge badge-paywall">Paywall</span>' : '';
+  const badgesHtml = (portfolioBadge || paywallBadge)
+    ? `<div class="entry-badges">${portfolioBadge}${paywallBadge}</div>` : '';
 
-  const summaryContent = entry.summary
-    ? `<textarea class="entry-summary" data-id="${entry.id}" rows="4">${escHtml(entry.summary)}</textarea>`
-    : `<div class="entry-summary-placeholder">No summary yet — click "Generate summaries" or ↻.</div>`;
+  const readText = entry.summary ? escHtml(entry.summary) : 'Generating summary…';
+  const readClass = entry.summary
+    ? 'entry-summary-read'
+    : 'entry-summary-read entry-summary-placeholder';
+
+  const isApproved = draftApproved.has(entry.id);
+  if (isApproved) card.classList.add('approved');
 
   card.innerHTML = `
-    <div class="entry-card-top">
-      <span class="drag-handle" title="Drag to reorder or drag to decline zone below">⠿</span>
-      <span class="entry-headline">${escHtml(entry.headline)}</span>
-      ${badges}
+    <div class="entry-card-header">
+      <div class="entry-card-header-left drag-zone">
+        <span class="drag-handle" title="Drag to reorder">⠿</span>
+        <span class="entry-headline--main">${escHtml(entry.headline)}</span>
+      </div>
+      <div style="display:flex;gap:6px;flex-shrink:0">
+        <button class="btn btn-approve ${isApproved ? 'approved' : ''}" data-action="approve">
+          ${isApproved ? '✓ Approved' : 'Approve'}
+        </button>
+        <button class="btn btn-secondary btn-edit">Edit</button>
+      </div>
     </div>
-    ${summaryContent}
-    <div class="entry-card-footer">
+    ${badgesHtml}
+    <p class="${readClass}">${readText}</p>
+    <textarea class="entry-summary hidden" data-id="${entry.id}" rows="5">${escHtml(entry.summary || '')}</textarea>
+    <div class="entry-card-footer--main">
       <a class="entry-source-link" href="${escHtml(entry.article_url || '#')}" target="_blank" rel="noopener">
-        (${escHtml(entry.source_name || 'Source')})
+        (${escHtml(entry.source_name || 'Source')}) ↗
       </a>
       <div class="entry-actions">
         ${entry.is_paywalled ? `<button class="btn btn-ghost" data-action="paywall" data-id="${entry.id}">Paywall options</button>` : ''}
@@ -513,7 +543,82 @@ function buildEntryCard(entry) {
     </div>
   `;
 
-  // Summary edit
+  // Approve toggle
+  card.querySelector('[data-action="approve"]').addEventListener('click', () => {
+    const approved = draftApproved.has(entry.id);
+    if (approved) {
+      draftApproved.delete(entry.id);
+      card.classList.remove('approved');
+      card.querySelector('[data-action="approve"]').textContent = 'Approve';
+      card.querySelector('[data-action="approve"]').classList.remove('approved');
+    } else {
+      draftApproved.add(entry.id);
+      card.classList.add('approved');
+      card.querySelector('[data-action="approve"]').textContent = '✓ Approved';
+      card.querySelector('[data-action="approve"]').classList.add('approved');
+    }
+  });
+
+  const editBtn = card.querySelector('.btn-edit');
+  const readEl  = card.querySelector('.entry-summary-read');
+  const editEl  = card.querySelector('.entry-summary');
+
+  editBtn.addEventListener('click', () => {
+    const isEditing = !editEl.classList.contains('hidden');
+    if (isEditing) {
+      const newSummary = editEl.value;
+      readEl.textContent = newSummary;
+      readEl.className = 'entry-summary-read';
+      readEl.classList.remove('hidden');
+      editEl.classList.add('hidden');
+      editBtn.textContent = 'Edit';
+      const e = state.entries.find(x => x.id === entry.id);
+      if (e) e.summary = newSummary;
+      PUT(`/api/draft/entry/${entry.id}`, { summary: newSummary }).catch(() => {});
+    } else {
+      editEl.value = readEl.textContent;
+      editEl.classList.remove('hidden');
+      readEl.classList.add('hidden');
+      editBtn.textContent = 'Done';
+      editEl.focus();
+    }
+  });
+
+  card.querySelector('[data-action="regen"]')?.addEventListener('click', () => regenerateEntry(entry.id));
+  card.querySelector('[data-action="paywall"]')?.addEventListener('click', () => openPaywallModal(entry.id));
+
+  return card;
+}
+
+function buildConsideredEntry(entry) {
+  const card = document.createElement('div');
+  card.className = 'entry-card entry-card--considered';
+  card.dataset.id = entry.id;
+
+  const summaryContent = entry.summary
+    ? `<textarea class="entry-summary" data-id="${entry.id}" rows="3">${escHtml(entry.summary)}</textarea>`
+    : `<div class="entry-summary-placeholder">No summary — click ↻</div>`;
+
+  const badges = [
+    entry.is_portfolio_flagged ? '<span class="badge badge-portfolio" style="font-size:10px">&#9830; Portfolio</span>' : '',
+    entry.is_paywalled         ? '<span class="badge badge-paywall"   style="font-size:10px">Paywall</span>'          : '',
+  ].filter(Boolean).join('');
+
+  card.innerHTML = `
+    <div class="entry-card-top drag-zone">
+      <span class="drag-handle" title="Drag to reorder">⠿</span>
+      <span class="entry-headline--side">${escHtml(entry.headline)}</span>
+      <button class="btn-regen" data-action="regen" data-id="${entry.id}" title="Regenerate">↻</button>
+    </div>
+    ${summaryContent}
+    <div class="entry-card-footer">
+      <a class="entry-source-link" href="${escHtml(entry.article_url || '#')}" target="_blank" rel="noopener">
+        (${escHtml(entry.source_name || 'Source')})
+      </a>
+      ${badges ? `<div style="display:flex;gap:4px">${badges}</div>` : ''}
+    </div>
+  `;
+
   const textarea = card.querySelector('.entry-summary');
   if (textarea) {
     textarea.addEventListener('blur', async () => {
@@ -525,9 +630,57 @@ function buildEntryCard(entry) {
   }
 
   card.querySelector('[data-action="regen"]')?.addEventListener('click', () => regenerateEntry(entry.id));
-  card.querySelector('[data-action="paywall"]')?.addEventListener('click', () => openPaywallModal(entry.id));
 
   return card;
+}
+
+function buildSaveEntry(entry) {
+  const card = document.createElement('div');
+  card.className = 'entry-card entry-card--save';
+  card.dataset.id = entry.id;
+
+  const pubDate = entry.published_at
+    ? new Date(entry.published_at).toLocaleDateString('en-US', { month: 'short', day: 'numeric' })
+    : '';
+
+  card.innerHTML = `
+    <span class="drag-handle drag-zone" title="Drag to reorder">⠿</span>
+    <div class="entry-save-text drag-zone">
+      <div class="entry-save-title">${escHtml(entry.headline)}</div>
+      <div class="entry-save-meta">${escHtml(entry.source_name || '')}${pubDate ? ' · ' + pubDate : ''}</div>
+    </div>
+  `;
+
+  return card;
+}
+
+// ── Auto-summarize on draft load ──────────────────────────────────────────
+
+async function autoSummarize() {
+  const needsSummary = state.entries.filter(e => !e.summary && !draftDeclined.has(e.id));
+  if (!needsSummary.length) return;
+  if (lastAutoSummarizedDate === state.currentDraftDate) return;
+  lastAutoSummarizedDate = state.currentDraftDate;
+
+  const statusEl = document.getElementById('draft-gen-status');
+  const n = needsSummary.length;
+  statusEl.textContent = `Generating ${n} summar${n === 1 ? 'y' : 'ies'}…`;
+  statusEl.classList.remove('hidden');
+
+  try {
+    await POST(`/api/draft/${state.currentDraftDate}/summarize`, {});
+    const fresh = await GET(`/api/draft/${state.currentDraftDate}`);
+    state.entries = fresh.entries || [];
+    renderSection('in_this_week');
+    renderSection('considered');
+    renderSection('save_for_future');
+  } catch {
+    statusEl.textContent = 'Summary generation failed';
+    setTimeout(() => statusEl.classList.add('hidden'), 3000);
+    return;
+  }
+
+  statusEl.classList.add('hidden');
 }
 
 async function regenerateEntry(id) {
@@ -535,17 +688,22 @@ async function regenerateEntry(id) {
   if (!entry) return;
 
   const card = document.querySelector(`.entry-card[data-id="${id}"]`);
-  const btn = card?.querySelector('[data-action="regen"]');
+  const btn  = card?.querySelector('[data-action="regen"]');
   if (btn) { btn.disabled = true; btn.classList.add('spinning'); }
 
   try {
     const updated = await POST(`/api/draft/entry/${id}/regenerate`, {});
     entry.summary = updated.summary;
-    const textarea = card?.querySelector('.entry-summary');
-    if (textarea) {
-      textarea.value = updated.summary || '';
-    } else if (card) {
-      renderSection(entry.section);
+
+    if (entry.section === 'in_this_week') {
+      const readEl = card?.querySelector('.entry-summary-read');
+      const editEl = card?.querySelector('.entry-summary');
+      if (readEl) { readEl.textContent = updated.summary || ''; readEl.className = 'entry-summary-read'; }
+      if (editEl) editEl.value = updated.summary || '';
+    } else {
+      const textarea = card?.querySelector('.entry-summary');
+      if (textarea) textarea.value = updated.summary || '';
+      else if (card) renderSection(entry.section);
     }
   } catch (err) {
     alert(`Regenerate failed: ${err.message}`);
@@ -575,12 +733,11 @@ function restoreEntry(id) {
 function updateColCounts() {
   const sections = ['in_this_week', 'considered', 'save_for_future'];
   for (const s of sections) {
-    const n = state.entries.filter(e => e.section === s).length;
+    const n = state.entries.filter(e => e.section === s && !draftDeclined.has(e.id)).length;
     document.getElementById(`count-${s}`).textContent = n;
   }
 
-  // Soft warning for "In this week"
-  const n = state.entries.filter(e => e.section === 'in_this_week').length;
+  const n = state.entries.filter(e => e.section === 'in_this_week' && !draftDeclined.has(e.id)).length;
   const warn = document.getElementById('warn-in_this_week');
   if (n < 5 && n > 0) {
     warn.textContent = `${n} items — aim for 5–10`;
@@ -633,6 +790,10 @@ document.getElementById('btn-back-to-scan').addEventListener('click', () => show
 
 function initSortables() {
   const sections = ['in_this_week', 'considered', 'save_for_future'];
+  const dropZone = document.getElementById('draft-drop-zone');
+
+  const showZone = () => dropZone.classList.add('drag-active');
+  const hideZone = () => dropZone.classList.remove('drag-active', 'drag-over');
 
   for (const s of sections) {
     if (sortables[s]) sortables[s].destroy();
@@ -640,48 +801,52 @@ function initSortables() {
     sortables[s] = new Sortable(document.getElementById(`list-${s}`), {
       group: 'entries',
       animation: 150,
-      handle: '.drag-handle',
+      handle: '.drag-zone',
       ghostClass: 'sortable-ghost',
       chosenClass: 'sortable-chosen',
-      onEnd: onSortEnd,
+      onStart: showZone,
+      onEnd: (evt) => { hideZone(); onSortEnd(evt); },
     });
   }
 
-  // Drop zone for declining entries
   if (sortables['_dropzone']) sortables['_dropzone'].destroy();
-  const dropZone = document.getElementById('draft-drop-zone');
   sortables['_dropzone'] = new Sortable(dropZone, {
     group: 'entries',
     animation: 150,
     handle: '.drag-handle',
     ghostClass: 'sortable-ghost',
     onAdd(evt) {
-      const id = evt.item.dataset.id;
-      // Remove from DOM immediately (don't keep it in drop zone)
       evt.item.remove();
-      declineEntry(id);
+      declineEntry(evt.item.dataset.id);
+      hideZone();
     },
   });
 
-  dropZone.addEventListener('dragover', () => dropZone.classList.add('drag-over'));
+  dropZone.addEventListener('dragover',  () => dropZone.classList.add('drag-over'));
   dropZone.addEventListener('dragleave', () => dropZone.classList.remove('drag-over'));
-  dropZone.addEventListener('drop', () => dropZone.classList.remove('drag-over'));
 }
 
 async function onSortEnd(evt) {
-  // Rebuild position state from DOM
   const sections = ['in_this_week', 'considered', 'save_for_future'];
-  const updates = [];
+  const updates  = [];
 
   for (const section of sections) {
     const list = document.getElementById(`list-${section}`);
     [...list.children].forEach((card, i) => {
       const id = card.dataset.id;
+      if (!id) return;
       const entry = state.entries.find(e => e.id === id);
       if (entry) {
-        entry.section = section;
+        const oldSection = entry.section;
+        entry.section  = section;
         entry.position = i;
         updates.push({ id, section, position: i });
+
+        // Rebuild card in place if it moved to a different section type
+        if (oldSection !== section) {
+          const newCard = buildEntryCard(entry);
+          list.replaceChild(newCard, card);
+        }
       }
     });
   }
@@ -690,23 +855,26 @@ async function onSortEnd(evt) {
   await POST('/api/draft/reorder', { updates }).catch(() => {});
 }
 
-// Generate all summaries
+// Regenerate all summaries (manual)
 document.getElementById('btn-summarize-all').addEventListener('click', async () => {
+  if (!state.currentDraftDate) return;
+  lastAutoSummarizedDate = null; // allow re-run
   const btn = document.getElementById('btn-summarize-all');
   btn.disabled = true;
-  btn.textContent = 'Generating…';
+  btn.textContent = 'Regenerating…';
 
   try {
-    const { updated } = await POST(`/api/draft/${state.currentDraftDate}/summarize`, {});
-    // Reload entries to get summaries
+    await POST(`/api/draft/${state.currentDraftDate}/summarize`, {});
     const fresh = await GET(`/api/draft/${state.currentDraftDate}`);
     state.entries = fresh.entries || [];
-    renderDraft();
+    renderSection('in_this_week');
+    renderSection('considered');
+    renderSection('save_for_future');
   } catch (err) {
     alert(`Summary generation failed: ${err.message}`);
   } finally {
     btn.disabled = false;
-    btn.textContent = 'Generate summaries';
+    btn.textContent = '↻ Regenerate all';
   }
 });
 
@@ -796,7 +964,6 @@ document.getElementById('btn-paywall-search').addEventListener('click', async ()
           entry.article_url = result.url;
           entry.is_paywalled = false;
         }
-        // Regenerate summary with new article
         await POST(`/api/draft/entry/${paywallEntryId}/regenerate`, {});
         const fresh = await GET(`/api/draft/${state.currentDraftDate}`);
         state.entries = fresh.entries || [];

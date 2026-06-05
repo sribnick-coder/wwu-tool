@@ -15,6 +15,9 @@ const PORT = process.env.PORT || 3000;
 
 // ── Middleware ────────────────────────────────────────────────────────────────
 
+app.use(express.static(path.join(__dirname, 'public')));
+app.use(express.json({ limit: '2mb' }));
+
 if (process.env.DISABLE_AUTH !== 'true') {
   app.use(basicAuth({
     users: { 'astreet': process.env.APP_PASSWORD || 'wwu2026' },
@@ -22,9 +25,6 @@ if (process.env.DISABLE_AUTH !== 'true') {
     realm: 'A-Street WWU Tool',
   }));
 }
-
-app.use(express.json({ limit: '2mb' }));
-app.use(express.static(path.join(__dirname, 'public')));
 
 // ── In-memory scan job state ──────────────────────────────────────────────────
 
@@ -160,6 +160,7 @@ app.post('/api/scan', async (req, res) => {
       const jobDone = scanJobs.get(scanId);
       if (jobDone) jobDone.status = 'done';
     } catch (err) {
+      console.error('[rank error]', err.message, err.status || '', err.error || '');
       const jobDone = scanJobs.get(scanId);
       if (jobDone) { jobDone.status = 'done'; jobDone.rankError = err.message; }
     }

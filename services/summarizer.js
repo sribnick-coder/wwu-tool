@@ -37,15 +37,16 @@ PREFERENCES CONTEXT:
 
 SUMMARY RULES:
 - 2–4 sentences. No padding.
+- Do NOT repeat or echo the article headline at the start of the summary. Jump straight into the substance.
 - Do NOT open with "Author X argues..." more than once per issue. Vary the opening: lead with the finding, the tension, the data point, the stakes, or the framing.
 - For opinion pieces, surface the counter-perspective or the broader debate the piece enters.
 - For research/data pieces, lead with the key finding and its implication — not methodology.
 - If the article mentions a portfolio company, flag it: "Amplify's Dan Meyer, an A-Street portfolio company, ..."
 - If the article is by a known A-Street advisor or EIR, note their relationship: "A-Street Executive-in-Residence Jordan Meranus..."
-- End each entry with the source as a hyperlinked publication name in parentheses: ([Source Name](URL))
+- Do NOT include any link, URL, or source citation at the end. The source is shown separately in the UI.
 - Never write "Read more" or "Click here."
 - Never invent facts. If the article is paywalled and full text is unavailable, write the best summary from the headline and preview, and note at the end: [Summary based on headline/preview — full text paywalled]
-- Return ONLY the formatted summary text. No preamble, no explanation.`;
+- Return ONLY the summary text. No preamble, no explanation, no markdown formatting.`;
 }
 
 async function generateSummary(article, pastedText = null) {

@@ -87,35 +87,42 @@
           <h2 class="draft-week-label" id="draft-week-label">Week of —</h2>
         </div>
         <div class="toolbar-right">
-          <button id="btn-summarize-all" class="btn btn-primary">Generate summaries</button>
-          <button id="btn-go-export" class="btn btn-secondary">Export →</button>
+          <span id="draft-gen-status" class="gen-status hidden"></span>
+          <button id="btn-summarize-all" class="btn btn-secondary">↻ Regenerate all</button>
+          <button id="btn-go-export" class="btn btn-primary">Export →</button>
         </div>
       </div>
 
-      <div class="three-col">
-        <div class="draft-col" id="col-in_this_week">
-          <div class="col-header">
-            <span class="col-title">In this week</span>
+      <div class="draft-panels">
+        <!-- Left: In this week (newsletter preview) -->
+        <div class="draft-main-panel">
+          <div class="panel-header">
+            <span class="panel-title">In this week</span>
             <span class="col-count" id="count-in_this_week">0</span>
             <span class="col-warn hidden" id="warn-in_this_week"></span>
           </div>
           <div class="entry-list" id="list-in_this_week"></div>
         </div>
-        <div class="draft-col" id="col-considered">
-          <div class="col-header">
-            <span class="col-title">Considered</span>
-            <span class="col-count" id="count-considered">0</span>
+
+        <!-- Right: Considered + Save for later stacked -->
+        <div class="draft-side-panel">
+          <div class="side-section">
+            <div class="panel-header">
+              <span class="panel-title">Considered</span>
+              <span class="col-count" id="count-considered">0</span>
+            </div>
+            <div class="entry-list" id="list-considered"></div>
           </div>
-          <div class="entry-list" id="list-considered"></div>
-        </div>
-        <div class="draft-col" id="col-save_for_future">
-          <div class="col-header">
-            <span class="col-title">Save for future</span>
-            <span class="col-count" id="count-save_for_future">0</span>
+          <div class="side-section">
+            <div class="panel-header">
+              <span class="panel-title">Save for later</span>
+              <span class="col-count" id="count-save_for_future">0</span>
+            </div>
+            <div class="entry-list" id="list-save_for_future"></div>
           </div>
-          <div class="entry-list" id="list-save_for_future"></div>
         </div>
       </div>
+
       <div id="draft-declined-drawer" class="declined-drawer hidden">
         <button class="declined-handle" id="draft-declined-handle">
           <span id="draft-declined-label">Declined (0)</span>
@@ -124,8 +131,9 @@
         <div id="draft-declined-list" class="declined-list hidden"></div>
       </div>
 
+      <!-- Decline zone — slides up from bottom when dragging -->
       <div id="draft-drop-zone" class="draft-drop-zone">
-        <span>Drag here to decline</span>
+        <span>Drop here to decline</span>
       </div>
 
     </section>

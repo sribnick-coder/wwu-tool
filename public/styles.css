@@ -200,8 +200,10 @@ html, body {
   flex-direction: column;
   gap: 8px;
 }
-.article-card:hover { border-color: var(--green); box-shadow: var(--shadow-md); }
-.article-card.selected { border-color: var(--green); background: var(--green-light); }
+.article-card:hover { border-color: #aaa; box-shadow: var(--shadow-md); }
+.article-card.sel-green  { border-color: var(--green); background: var(--green-light); }
+.article-card.sel-blue   { border-color: #3b82f6;      background: #dbeafe; }
+.article-card.sel-purple { border-color: #8b5cf6;      background: #ede9fe; }
 .article-card.declined { opacity: 0.45; }
 
 .card-top { display: flex; align-items: flex-start; gap: 10px; }
@@ -424,36 +426,63 @@ html, body {
 .btn-danger { background: var(--red-light); color: #b91c1c; border: 1px solid #fca5a5; }
 .btn-large { padding: 10px 22px; font-size: 14px; }
 
-/* ── Draft view — three columns ──────────────────────────────────────────── */
+/* ── Draft view — two-panel layout ──────────────────────────────────────── */
 .draft-week-label { font-size: 15px; font-weight: 700; }
 
-.three-col {
+.draft-panels {
   flex: 1;
   display: grid;
-  grid-template-columns: 1fr 1fr 1fr;
-  gap: 0;
+  grid-template-columns: 3fr 2fr;
   overflow: hidden;
 }
 
-.draft-col {
+.draft-main-panel {
   display: flex;
   flex-direction: column;
-  border-right: 1px solid var(--border);
+  border-right: 2px solid #d0d0d0;
   overflow: hidden;
+  background: #efefef;
 }
-.draft-col:last-child { border-right: none; }
 
-.col-header {
+.draft-side-panel {
+  display: flex;
+  flex-direction: column;
+  overflow: hidden;
+  background: #efefef;
+}
+
+.side-section {
+  display: flex;
+  flex-direction: column;
+  flex: 1;
+  overflow: hidden;
+  min-height: 0;
+}
+.side-section + .side-section { border-top: 2px solid #c8c8c8; }
+
+/* Shared panel header */
+.panel-header {
   display: flex;
   align-items: center;
   gap: 8px;
   padding: 10px 16px;
-  border-bottom: 1px solid var(--border);
-  background: var(--white);
+  border-bottom: 2px solid #d0d0d0;
+  background: #e2e2e2;
   flex-shrink: 0;
 }
 
-.col-title { font-size: 13px; font-weight: 700; }
+/* Section header accent colours match scan-view button colours */
+.draft-main-panel .panel-header {
+  border-bottom-color: var(--green);
+}
+.draft-side-panel .side-section:first-child .panel-header {
+  border-bottom-color: #3b82f6;
+}
+.draft-side-panel .side-section:last-child .panel-header {
+  border-bottom-color: #8b5cf6;
+}
+
+.panel-title { font-size: 13px; font-weight: 700; }
 
 .col-count {
   font-size: 12px;
@@ -477,23 +506,22 @@ html, body {
 .entry-list {
   flex: 1;
   overflow-y: auto;
-  padding: 10px;
+  padding: 12px;
   display: flex;
   flex-direction: column;
-  gap: 8px;
-  min-height: 80px;
+  gap: 10px;
+  min-height: 60px;
 }
 
 /* Sortable drag feedback */
-.sortable-ghost { opacity: 0.4; }
+.sortable-ghost { opacity: 0.35; }
 .sortable-chosen { box-shadow: var(--shadow-md); }
 
-/* ── Draft entry card ────────────────────────────────────────────────────── */
+/* ── Shared entry card base ───────────────────────────────────────────────── */
 .entry-card {
   background: var(--white);
   border: 1px solid var(--border);
   border-radius: var(--radius);
-  padding: 12px;
   display: flex;
   flex-direction: column;
   gap: 8px;
@@ -501,37 +529,36 @@ html, body {
 }
 .entry-card:hover { box-shadow: var(--shadow-md); }
 
-.entry-card-top {
-  display: flex;
-  align-items: flex-start;
-  gap: 8px;
+.drag-zone {
+  cursor: grab;
+  user-select: none;
 }
+.drag-zone:active { cursor: grabbing; }
 
 .drag-handle {
   flex-shrink: 0;
-  color: var(--text-muted);
-  cursor: grab;
+  color: #ccc;
   font-size: 16px;
-  padding-top: 2px;
-  user-select: none;
+  line-height: 1;
 }
-.drag-handle:active { cursor: grabbing; }
+.drag-zone:hover .drag-handle { color: var(--text-muted); }
 
-.entry-headline {
-  font-size: 13px;
-  font-weight: 700;
-  line-height: 1.4;
-  flex: 1;
+.entry-source-link {
+  font-size: 11.5px;
+  color: var(--green-dark);
+  text-decoration: none;
 }
+.entry-source-link:hover { text-decoration: underline; }
+
+.entry-actions { display: flex; gap: 4px; align-items: center; }
 
 .entry-summary {
-  font-size: 12.5px;
+  font-size: 13px;
   line-height: 1.6;
   color: var(--text);
   border: 1px solid transparent;
   border-radius: 4px;
   padding: 4px 6px;
-  min-height: 48px;
   resize: vertical;
   font-family: var(--font);
   width: 100%;
@@ -544,6 +571,104 @@ html, body {
   background: var(--white);
 }
 
+.entry-summary-placeholder {
+  font-size: 12.5px;
+  color: var(--text-muted);
+  font-style: italic;
+  padding: 4px 6px;
+}
+
+/* ── Approve button ──────────────────────────────────────────────────────── */
+.btn-approve {
+  font-size: 11.5px;
+  padding: 4px 10px;
+  background: var(--white);
+  color: var(--text-muted);
+  border: 1px solid var(--border);
+  border-radius: var(--radius);
+  cursor: pointer;
+  font-family: var(--font);
+  font-weight: 600;
+  transition: all 0.15s;
+  white-space: nowrap;
+}
+.btn-approve:hover { border-color: var(--green); color: var(--green-dark); }
+.btn-approve.approved { background: var(--green); color: #fff; border-color: var(--green); }
+.btn-approve.approved:hover { background: var(--green-dark); border-color: var(--green-dark); }
+
+/* ── Main panel card (In this week — newsletter preview) ─────────────────── */
+.entry-card--main {
+  padding: 16px 18px;
+  gap: 10px;
+}
+.entry-card--main.approved {
+  border-left: 3px solid var(--green);
+  background: var(--green-light);
+}
+
+.entry-card-header {
+  display: flex;
+  align-items: flex-start;
+  justify-content: space-between;
+  gap: 10px;
+}
+
+.entry-card-header-left {
+  display: flex;
+  align-items: flex-start;
+  gap: 8px;
+  flex: 1;
+  min-width: 0;
+}
+
+.entry-headline--main {
+  font-size: 14.5px;
+  font-weight: 700;
+  line-height: 1.4;
+  color: var(--text);
+}
+
+.entry-summary-read {
+  font-size: 13.5px;
+  line-height: 1.7;
+  color: var(--text);
+}
+.entry-summary-read.entry-summary-placeholder {
+  font-size: 13px;
+  color: var(--text-muted);
+  font-style: italic;
+}
+
+.entry-card-footer--main {
+  display: flex;
+  align-items: center;
+  justify-content: space-between;
+  gap: 6px;
+  padding-top: 2px;
+}
+
+.entry-badges { display: flex; gap: 6px; flex-wrap: wrap; }
+
+/* ── Considered card ─────────────────────────────────────────────────────── */
+.entry-card--considered {
+  padding: 10px 12px;
+  gap: 6px;
+}
+
+.entry-card-top {
+  display: flex;
+  align-items: flex-start;
+  gap: 8px;
+}
+
+.entry-headline--side {
+  font-size: 12.5px;
+  font-weight: 700;
+  line-height: 1.4;
+  color: var(--text);
+  flex: 1;
+}
+
 .entry-card-footer {
   display: flex;
   align-items: center;
@@ -552,44 +677,67 @@ html, body {
   flex-wrap: wrap;
 }
 
-.entry-source-link {
-  font-size: 11.5px;
-  color: var(--green-dark);
-  text-decoration: none;
+/* ── Save for later card (minimal) ───────────────────────────────────────── */
+.entry-card--save {
+  padding: 9px 12px;
+  flex-direction: row;
+  align-items: center;
+  gap: 8px;
 }
-.entry-source-link:hover { text-decoration: underline; }
 
-.entry-actions { display: flex; gap: 4px; }
+.entry-save-text {
+  flex: 1;
+  min-width: 0;
+}
 
-.entry-summary-placeholder {
+.entry-save-title {
+  font-size: 12px;
+  font-weight: 600;
+  line-height: 1.4;
+  white-space: nowrap;
+  overflow: hidden;
+  text-overflow: ellipsis;
+}
+
+.entry-save-meta {
+  font-size: 11px;
+  color: var(--text-muted);
+  margin-top: 1px;
+}
+
+/* ── Generating status indicator ─────────────────────────────────────────── */
+.gen-status {
   font-size: 12px;
   color: var(--text-muted);
   font-style: italic;
-  padding: 6px;
 }
+.gen-status.hidden { display: none; }
 
-.generating-indicator {
-  font-size: 11.5px;
-  color: var(--text-muted);
-  font-style: italic;
-}
-
-/* ── Draft drop zone ─────────────────────────────────────────────────────── */
+/* ── Decline drop zone — fixed bar that slides up during drag ────────────── */
 .draft-drop-zone {
-  flex-shrink: 0;
-  margin: 0 16px 12px;
-  border: 2px dashed var(--border);
-  border-radius: var(--radius);
-  padding: 10px;
-  text-align: center;
-  font-size: 12px;
-  color: var(--text-muted);
-  transition: border-color 0.15s, background 0.15s, color 0.15s;
+  position: fixed;
+  bottom: 0;
+  left: 0;
+  right: 0;
+  height: 0;
+  overflow: hidden;
+  background: #fee2e2;
+  border-top: 2px dashed transparent;
+  display: flex;
+  align-items: center;
+  justify-content: center;
+  color: #b91c1c;
+  font-size: 13px;
+  font-weight: 600;
+  transition: height 0.2s ease, border-color 0.15s;
+  z-index: 50;
+}
+.draft-drop-zone.drag-active {
+  height: 52px;
+  border-color: #ef4444;
 }
 .draft-drop-zone.drag-over {
-  border-color: #ef4444;
-  background: #fee2e2;
-  color: #b91c1c;
+  background: #fca5a5;
 }
 
 /* ── Regen button (circular arrow) ──────────────────────────────────────── */
