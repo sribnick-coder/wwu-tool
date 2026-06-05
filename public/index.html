@@ -61,32 +61,40 @@
         <span id="progress-text">Scanning…</span>
       </div>
 
-      <div id="article-list" class="article-list">
-        <div class="empty-state">Click <strong>Refresh scan</strong> to fetch articles from all sources.</div>
-      </div>
+      <div class="scan-body">
+        <div id="article-list" class="article-list">
+          <div class="empty-state">Click <strong>Refresh scan</strong> to fetch articles from all sources.</div>
+        </div>
 
-      <div id="declined-drawer" class="declined-drawer hidden">
-        <button class="declined-handle" id="declined-handle">
-          <span id="declined-label">Declined (0)</span>
-          <span id="declined-arrow" class="drawer-arrow">▲</span>
-        </button>
-        <div id="declined-list" class="declined-list hidden"></div>
-      </div>
+        <div class="scan-rail">
+          <div class="rail-section" id="declined-rail-section">
+            <button class="rail-section-header" id="declined-handle">
+              <span id="declined-label">Declined (0)</span>
+              <span id="declined-arrow" class="rail-arrow open">▲</span>
+            </button>
+            <div id="declined-list" class="rail-section-body"></div>
+          </div>
 
-      <div id="published-drawer" class="declined-drawer hidden">
-        <button class="declined-handle" id="published-handle">
-          <span id="published-label">Published (0)</span>
-          <span id="published-arrow" class="drawer-arrow">▲</span>
-        </button>
-        <div id="published-list" class="declined-list hidden"></div>
-      </div>
+          <div class="rail-resize-handle" id="rail-resize-1"></div>
 
-      <div id="dismissed-drawer" class="declined-drawer">
-        <button class="declined-handle" id="dismissed-handle">
-          <span id="dismissed-label">Dismissed holdovers</span>
-          <span id="dismissed-arrow" class="drawer-arrow">▲</span>
-        </button>
-        <div id="dismissed-list" class="declined-list hidden"></div>
+          <div class="rail-section" id="published-rail-section">
+            <button class="rail-section-header" id="published-handle">
+              <span id="published-label">Published (0)</span>
+              <span id="published-arrow" class="rail-arrow open">▲</span>
+            </button>
+            <div id="published-list" class="rail-section-body"></div>
+          </div>
+
+          <div class="rail-resize-handle" id="rail-resize-2"></div>
+
+          <div class="rail-section" id="dismissed-rail-section">
+            <button class="rail-section-header" id="dismissed-handle">
+              <span id="dismissed-label">Dismissed holdovers</span>
+              <span id="dismissed-arrow" class="rail-arrow open">▲</span>
+            </button>
+            <div id="dismissed-list" class="rail-section-body"></div>
+          </div>
+        </div>
       </div>
 
       <div class="draft-toolbar" id="draft-toolbar" style="display:none">
@@ -121,16 +129,19 @@
           <div class="entry-list" id="list-in_this_week"></div>
         </div>
 
+        <div class="draft-resize-handle" id="draft-h-resize"></div>
+
         <!-- Right: Considered + Save for later stacked -->
         <div class="draft-side-panel">
-          <div class="side-section">
+          <div class="side-section" id="side-considered">
             <div class="panel-header">
               <span class="panel-title">Considered</span>
               <span class="col-count" id="count-considered">0</span>
             </div>
             <div class="entry-list" id="list-considered"></div>
           </div>
-          <div class="side-section">
+          <div class="side-resize-handle" id="draft-v-resize"></div>
+          <div class="side-section" id="side-save-for-future">
             <div class="panel-header">
               <span class="panel-title">Save for later</span>
               <span class="col-count" id="count-save_for_future">0</span>

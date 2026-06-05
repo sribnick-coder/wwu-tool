@@ -319,8 +319,7 @@ function buildArticleCard(a) {
 
   card.innerHTML = `
     <div class="card-top">
-      ${isRecommended ? '<span class="star-badge" title="Recommended">★</span>' : ''}
-      ${publishedBadge}
+      ${(isRecommended || publishedBadge) ? `<div class="card-badges">${isRecommended ? '<span class="star-badge" title="Recommended">★</span>' : ''}${publishedBadge}</div>` : ''}
       <span class="card-headline">${escHtml(a.title)}</span>
     </div>
     <div class="assign-btns">
@@ -363,7 +362,7 @@ function buildHoldoverCard(h) {
 
   card.innerHTML = `
     <div class="card-top">
-      <span class="badge badge-holdover">${escHtml(sectionLabel)} · ${weeksHeld}w held</span>
+      <div class="card-badges"><span class="badge badge-holdover">${escHtml(sectionLabel)} · ${weeksHeld}w held</span></div>
       <span class="card-headline">${escHtml(h.headline)}</span>
     </div>
     <div class="assign-btns">
@@ -404,35 +403,35 @@ function dismissHoldoverFromScan(holdoverId, articleId, card) {
   if (dismissedDrawerOpen) loadAndRenderDismissedDrawer();
 }
 
-// ── Declined drawer ───────────────────────────────────────────────────────
+// ── Declined rail section ─────────────────────────────────────────────────
 
-let drawerOpen = false;
+let drawerOpen = true;
 
 function renderDeclinedDrawer() {
   const declined = state.articles.filter(a => state.assignments[a.id] === 'declined');
-  const drawer = document.getElementById('declined-drawer');
-  const label  = document.getElementById('declined-label');
-  const list   = document.getElementById('declined-list');
+  const label = document.getElementById('declined-label');
+  const list  = document.getElementById('declined-list');
+
+  label.textContent = `Declined (${declined.length})`;
+  list.innerHTML = '';
 
   if (!declined.length) {
-    drawer.classList.add('hidden');
-    drawerOpen = false;
+    const empty = document.createElement('div');
+    empty.className = 'rail-empty';
+    empty.textContent = 'No declined articles.';
+    list.appendChild(empty);
     return;
   }
 
-  drawer.classList.remove('hidden');
-  label.textContent = `Declined (${declined.length})`;
-
-  list.innerHTML = '';
   for (const a of declined) {
     const card = document.createElement('div');
-    card.className = 'declined-card';
+    card.className = 'rail-card';
     const pubDate = a.published_at
       ? new Date(a.published_at).toLocaleDateString('en-US', { month: 'short', day: 'numeric' })
       : '';
     card.innerHTML = `
-      <div class="declined-card-title">${escHtml(a.title)}</div>
-      <div class="declined-card-meta">${escHtml(a.source_name)}${pubDate ? ' · ' + pubDate : ''}</div>
+      <div class="rail-card-title">${escHtml(a.title)}</div>
+      <div class="rail-card-meta">${escHtml(a.source_name)}${pubDate ? ' · ' + pubDate : ''}</div>
       <button class="btn btn-secondary" style="font-size:11px;padding:3px 10px;margin-top:4px" data-restore="${a.id}">Restore</button>
     `;
     card.querySelector('[data-restore]').addEventListener('click', () => {
@@ -447,36 +446,34 @@ function renderDeclinedDrawer() {
 
 document.getElementById('declined-handle').addEventListener('click', () => {
   drawerOpen = !drawerOpen;
-  document.getElementById('declined-list').classList.toggle('hidden', !drawerOpen);
-  document.getElementById('declined-arrow').classList.toggle('open', drawerOpen);
+  document.getElementById('declined-rail-section').classList.toggle('collapsed', !drawerOpen);
 });
 
-// ── Published drawer ──────────────────────────────────────────────────────
+// ── Published rail section ────────────────────────────────────────────────
 
-let publishedDrawerOpen = false;
+let publishedDrawerOpen = true;
 
 function renderPublishedDrawer() {
-  const drawer = document.getElementById('published-drawer');
-  const label  = document.getElementById('published-label');
-  const list   = document.getElementById('published-list');
+  const label = document.getElementById('published-label');
+  const list  = document.getElementById('published-list');
 
-  if (!state.recentPublished.length) { drawer.classList.add('hidden'); return; }
+  if (!state.recentPublished.length) {
+    label.textContent = 'Published';
+    list.innerHTML = '<div class="rail-empty">No published articles yet.</div>';
+    return;
+  }
 
-  drawer.classList.remove('hidden');
-  label.textContent = `Published — last 4 weeks (${state.recentPublished.length})`;
-
-  if (!publishedDrawerOpen) return;
-
+  label.textContent = `Published — last 4 wks (${state.recentPublished.length})`;
   list.innerHTML = '';
   const seen = new Set();
   for (const p of state.recentPublished) {
     if (seen.has(p.article_id)) continue;
     seen.add(p.article_id);
     const card = document.createElement('div');
-    card.className = 'declined-card';
+    card.className = 'rail-card';
     card.innerHTML = `
-      <div class="declined-card-title">${escHtml(p.headline)}</div>
-      <div class="declined-card-meta">${escHtml(p.source_name || '')} · Wk ${escHtml(p.week_date || '')}</div>
+      <div class="rail-card-title">${escHtml(p.headline)}</div>
+      <div class="rail-card-meta">${escHtml(p.source_name || '')} · Wk ${escHtml(p.week_date || '')}</div>
     `;
     list.appendChild(card);
   }
@@ -484,32 +481,30 @@ function renderPublishedDrawer() {
 
 document.getElementById('published-handle').addEventListener('click', () => {
   publishedDrawerOpen = !publishedDrawerOpen;
-  document.getElementById('published-list').classList.toggle('hidden', !publishedDrawerOpen);
-  document.getElementById('published-arrow').classList.toggle('open', publishedDrawerOpen);
-  if (publishedDrawerOpen) renderPublishedDrawer();
+  document.getElementById('published-rail-section').classList.toggle('collapsed', !publishedDrawerOpen);
 });
 
-// ── Dismissed holdovers drawer ────────────────────────────────────────────
+// ── Dismissed holdovers rail section ──────────────────────────────────────
 
-let dismissedDrawerOpen = false;
+let dismissedDrawerOpen = true;
 
 async function loadAndRenderDismissedDrawer() {
   const list = document.getElementById('dismissed-list');
-  list.innerHTML = '<div style="padding:8px;color:var(--text-muted);font-size:12px">Loading…</div>';
+  list.innerHTML = '<div class="rail-empty">Loading…</div>';
   try {
     const dismissed = await GET('/api/holdovers/dismissed');
     list.innerHTML = '';
     if (!dismissed.length) {
-      list.innerHTML = '<div style="padding:8px;color:var(--text-muted);font-size:12px">Nothing dismissed yet.</div>';
+      list.innerHTML = '<div class="rail-empty">Nothing dismissed yet.</div>';
       return;
     }
     for (const h of dismissed) {
       const card = document.createElement('div');
-      card.className = 'declined-card';
+      card.className = 'rail-card';
       const weeksAgo = Math.floor((Date.now() - new Date(h.dismissed_at)) / (7 * 24 * 60 * 60 * 1000));
       card.innerHTML = `
-        <div class="declined-card-title">${escHtml(h.headline)}</div>
-        <div class="declined-card-meta">${escHtml(h.source_name || '')} · dismissed ${weeksAgo}w ago</div>
+        <div class="rail-card-title">${escHtml(h.headline)}</div>
+        <div class="rail-card-meta">${escHtml(h.source_name || '')} · dismissed ${weeksAgo}w ago</div>
         <button class="btn btn-secondary" style="font-size:11px;padding:3px 10px;margin-top:4px" data-restore-holdover="${h.id}">Restore</button>
       `;
       card.querySelector('[data-restore-holdover]').addEventListener('click', async () => {
@@ -524,17 +519,14 @@ async function loadAndRenderDismissedDrawer() {
       list.appendChild(card);
     }
   } catch {
-    list.innerHTML = '<div style="padding:8px;color:var(--text-muted);font-size:12px">Could not load dismissed items.</div>';
+    list.innerHTML = '<div class="rail-empty">Could not load dismissed items.</div>';
   }
 }
 
 document.getElementById('dismissed-handle').addEventListener('click', () => {
   dismissedDrawerOpen = !dismissedDrawerOpen;
-  const list = document.getElementById('dismissed-list');
-  list.classList.toggle('hidden', !dismissedDrawerOpen);
-  document.getElementById('dismissed-arrow').classList.toggle('open', dismissedDrawerOpen);
+  document.getElementById('dismissed-rail-section').classList.toggle('collapsed', !dismissedDrawerOpen);
   if (dismissedDrawerOpen) loadAndRenderDismissedDrawer();
-  document.getElementById('dismissed-drawer').classList.remove('hidden');
 });
 
 // ── Draft toolbar ─────────────────────────────────────────────────────────
@@ -692,6 +684,7 @@ function renderDraft() {
   renderSection('save_for_future');
   updateColCounts();
   initSortables();
+  initDraftResize();
 
   // Auto-generate any missing summaries on first load
   autoSummarize();
@@ -1105,6 +1098,72 @@ document.getElementById('btn-dismiss-old-confirm').addEventListener('click', asy
   }
 });
 
+// ── Panel resize (shared) ─────────────────────────────────────────────────
+
+function initPanelResize(handleEl, prevEl, nextEl, axis) {
+  let dragging = false, startPos, startPrev, startNext;
+
+  handleEl.addEventListener('mousedown', e => {
+    if (prevEl.classList.contains('collapsed') || nextEl.classList.contains('collapsed')) return;
+    dragging = true;
+    startPos  = axis === 'x' ? e.clientX : e.clientY;
+    startPrev = axis === 'x' ? prevEl.offsetWidth  : prevEl.offsetHeight;
+    startNext = axis === 'x' ? nextEl.offsetWidth  : nextEl.offsetHeight;
+    document.body.style.cursor     = axis === 'x' ? 'col-resize' : 'row-resize';
+    document.body.style.userSelect = 'none';
+    e.preventDefault();
+  });
+
+  document.addEventListener('mousemove', e => {
+    if (!dragging) return;
+    const delta   = (axis === 'x' ? e.clientX : e.clientY) - startPos;
+    const prop    = axis === 'x' ? 'width' : 'height';
+    const newPrev = Math.max(80, startPrev + delta);
+    const newNext = Math.max(80, startNext - delta);
+    prevEl.style[prop] = newPrev + 'px';
+    prevEl.style.flex  = 'none';
+    nextEl.style[prop] = newNext + 'px';
+    nextEl.style.flex  = 'none';
+  });
+
+  document.addEventListener('mouseup', () => {
+    if (!dragging) return;
+    dragging = false;
+    document.body.style.cursor     = '';
+    document.body.style.userSelect = '';
+  });
+}
+
+function initRailResize() {
+  initPanelResize(
+    document.getElementById('rail-resize-1'),
+    document.getElementById('declined-rail-section'),
+    document.getElementById('published-rail-section'),
+    'y'
+  );
+  initPanelResize(
+    document.getElementById('rail-resize-2'),
+    document.getElementById('published-rail-section'),
+    document.getElementById('dismissed-rail-section'),
+    'y'
+  );
+}
+
+function initDraftResize() {
+  initPanelResize(
+    document.getElementById('draft-h-resize'),
+    document.querySelector('.draft-main-panel'),
+    document.querySelector('.draft-side-panel'),
+    'x'
+  );
+  initPanelResize(
+    document.getElementById('draft-v-resize'),
+    document.getElementById('side-considered'),
+    document.getElementById('side-save-for-future'),
+    'y'
+  );
+}
+
 function initSortables() {
   const sections = ['in_this_week', 'considered', 'save_for_future'];
   const dropZone = document.getElementById('draft-drop-zone');
@@ -1411,6 +1470,7 @@ function escHtml(str) {
 
 (async function init() {
   await checkOAuthStatus();
+  initRailResize();
   try {
     const [scanData, holdoverData, publishedData] = await Promise.all([
       GET('/api/articles/latest'),
@@ -1433,5 +1493,6 @@ function escHtml(str) {
 
     renderArticles();
     renderPublishedDrawer();
+    loadAndRenderDismissedDrawer();
   } catch {}
 })();
