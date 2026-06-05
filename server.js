@@ -327,13 +327,25 @@ app.post('/api/draft', async (req, res) => {
 
   if (!articles?.length) return res.status(400).json({ error: 'Articles not found' });
 
-  // Get existing entries to avoid duplicates
+  // Get existing entries
   const { data: existing } = await supabase
     .from('draft_entries')
-    .select('article_id')
+    .select('id, article_id')
     .eq('draft_id', draft.id);
 
-  const existingArticleIds = new Set((existing || []).map(e => e.article_id));
+  const existingByArticleId = Object.fromEntries((existing || []).map(e => [e.article_id, e.id]));
+
+  // Update section for existing entries whose assignment changed
+  const updatePromises = Object.entries(sectionMap)
+    .filter(([articleId]) => existingByArticleId[articleId] !== undefined)
+    .map(([articleId, section]) =>
+      supabase.from('draft_entries')
+        .update({ section, updated_at: new Date().toISOString() })
+        .eq('id', existingByArticleId[articleId])
+    );
+  if (updatePromises.length > 0) await Promise.all(updatePromises);
+
+  const existingArticleIds = new Set(Object.keys(existingByArticleId));
 
   const newEntries = articles
     .filter(a => !existingArticleIds.has(a.id))

@@ -48,6 +48,7 @@ function showView(name) {
   document.querySelector(`[data-view="${name}"]`).classList.add('active');
 
   if (name === 'draft') refreshDraftView();
+  if (name === 'scan') renderArticles();
   if (name === 'export') refreshExportView();
 }
 
@@ -215,6 +216,15 @@ function updateCounterBar() {
   document.getElementById('n-this-week').textContent = nThis;
   document.getElementById('n-considered').textContent = nCons;
   document.getElementById('n-save').textContent = nSave;
+}
+
+function syncAssignmentsFromEntries() {
+  for (const entry of state.entries) {
+    if (!entry.article_id) continue;
+    const section = entry.section === 'in_this_week' ? 'this_week' : entry.section;
+    state.assignments[entry.article_id] = draftDeclined.has(entry.id) ? 'declined' : section;
+  }
+  updateCounterBar();
 }
 
 // ── Article cards ─────────────────────────────────────────────────────────
@@ -417,6 +427,7 @@ document.getElementById('btn-draft').addEventListener('click', async () => {
     state.currentDraftDate = draft.week_date;
     state.draft = draft;
     state.entries = draft.entries || [];
+    syncAssignmentsFromEntries();
     showView('draft');
   } catch (err) {
     alert(`Could not create draft: ${err.message}`);
@@ -452,6 +463,7 @@ async function loadLatestDraft() {
       state.currentDraftDate = full.week_date;
       state.draft = full;
       state.entries = full.entries || [];
+      syncAssignmentsFromEntries();
       renderDraft();
     }
   } catch {}
@@ -852,6 +864,7 @@ async function onSortEnd(evt) {
   }
 
   updateColCounts();
+  syncAssignmentsFromEntries();
   await POST('/api/draft/reorder', { updates }).catch(() => {});
 }
 

@@ -434,6 +434,9 @@ html, body {
   display: grid;
   grid-template-columns: 3fr 2fr;
   overflow: hidden;
+  max-width: 1400px;
+  width: 100%;
+  align-self: center;
 }
 
 .draft-main-panel {
