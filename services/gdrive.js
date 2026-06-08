@@ -1,8 +1,7 @@
 const { google } = require('googleapis');
-const fs = require('fs');
-const path = require('path');
+const supabase = require('./db');
 
-const TOKEN_PATH = path.join(__dirname, '..', '.google_token.json');
+const SETTING_KEY = 'google_oauth_token';
 
 function getOAuthClient() {
   return new google.auth.OAuth2(
@@ -12,16 +11,27 @@ function getOAuthClient() {
   );
 }
 
-function loadToken() {
+async function loadToken() {
   try {
-    return JSON.parse(fs.readFileSync(TOKEN_PATH, 'utf8'));
+    const { data } = await supabase
+      .from('app_settings')
+      .select('value')
+      .eq('key', SETTING_KEY)
+      .single();
+    return data?.value || null;
   } catch {
     return null;
   }
 }
 
-function saveToken(token) {
-  fs.writeFileSync(TOKEN_PATH, JSON.stringify(token));
+async function saveToken(token) {
+  await supabase
+    .from('app_settings')
+    .upsert({ key: SETTING_KEY, value: token }, { onConflict: 'key' });
+}
+
+async function clearToken() {
+  await supabase.from('app_settings').delete().eq('key', SETTING_KEY);
 }
 
 function getAuthUrl() {
@@ -36,12 +46,12 @@ function getAuthUrl() {
 async function exchangeCode(code) {
   const oauth2Client = getOAuthClient();
   const { tokens } = await oauth2Client.getToken(code);
-  saveToken(tokens);
+  await saveToken(tokens);
   return tokens;
 }
 
 async function getAuthorizedClient() {
-  const token = loadToken();
+  const token = await loadToken();
   if (!token) throw new Error('NOT_AUTHORIZED');
 
   const oauth2Client = getOAuthClient();
@@ -51,15 +61,20 @@ async function getAuthorizedClient() {
   if (token.expiry_date && token.expiry_date < Date.now() + 60000) {
     try {
       const { credentials } = await oauth2Client.refreshAccessToken();
-      saveToken(credentials);
+      await saveToken(credentials);
       oauth2Client.setCredentials(credentials);
     } catch (err) {
-      fs.unlinkSync(TOKEN_PATH);
+      await clearToken();
       throw new Error('NOT_AUTHORIZED');
     }
   }
 
   return oauth2Client;
+}
+
+async function isAuthorized() {
+  const token = await loadToken();
+  return token !== null;
 }
 
 // Walk Google Drive folder path by name
@@ -114,7 +129,7 @@ function formatDocBody(draft, entries) {
 
   // Build requests array for Google Docs batchUpdate
   const requests = [];
-  let cursor = 1; // Docs API inserts at index
+  let cursor = 1;
 
   function insertText(text, bold = false, fontSize = 11, color = null) {
     requests.push({
@@ -222,10 +237,6 @@ async function createGoogleDoc(weekDate, entries) {
   }
 
   return `https://docs.google.com/document/d/${docId}/edit`;
-}
-
-function isAuthorized() {
-  return loadToken() !== null;
 }
 
 module.exports = { getAuthUrl, exchangeCode, createGoogleDoc, isAuthorized };

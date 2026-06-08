@@ -88,3 +88,9 @@ CREATE TABLE IF NOT EXISTS holdover_pool (
 );
 
 CREATE INDEX IF NOT EXISTS idx_holdover_active ON holdover_pool(first_saved_at) WHERE dismissed_at IS NULL;
+
+-- ── App settings (persistent key/value — stores OAuth tokens across deploys) ──
+CREATE TABLE IF NOT EXISTS app_settings (
+  key TEXT PRIMARY KEY,
+  value JSONB
+);

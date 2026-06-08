@@ -701,7 +701,7 @@ app.get('/api/export/:weekDate/text', async (req, res) => {
 });
 
 app.post('/api/export/:weekDate/gdoc', async (req, res) => {
-  if (!isAuthorized()) return res.status(401).json({ error: 'NOT_AUTHORIZED', authUrl: getAuthUrl() });
+  if (!await isAuthorized()) return res.status(401).json({ error: 'NOT_AUTHORIZED', authUrl: getAuthUrl() });
 
   const { data: draft } = await supabase.from('drafts').select('id, week_date').eq('week_date', req.params.weekDate).single();
   if (!draft) return res.status(404).json({ error: 'Draft not found' });
@@ -726,8 +726,9 @@ app.post('/api/export/:weekDate/gdoc', async (req, res) => {
 
 // ── Google OAuth ──────────────────────────────────────────────────────────────
 
-app.get('/oauth/status', (req, res) => {
-  res.json({ authorized: isAuthorized(), authUrl: isAuthorized() ? null : getAuthUrl() });
+app.get('/oauth/status', async (req, res) => {
+  const authorized = await isAuthorized();
+  res.json({ authorized, authUrl: authorized ? null : getAuthUrl() });
 });
 
 app.get('/oauth/callback', async (req, res) => {
