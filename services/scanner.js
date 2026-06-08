@@ -13,7 +13,10 @@ const parser = new RSSParser({
   },
   requestOptions: { rejectUnauthorized: false },
   defaultRSS: 2.0,
-  xml2js: { strict: false, trim: true },
+  // NOTE: do NOT set xml2js.strict=false — non-strict mode makes the sax parser
+  // uppercase tag names (<rss> → RSS), which breaks rss-parser's feed detection
+  // and causes "Feed not recognized as RSS 1 or 2" on every valid feed.
+  xml2js: { trim: true },
 });
 
 // High-volume sources that need smart selection (max 2-4 articles)
