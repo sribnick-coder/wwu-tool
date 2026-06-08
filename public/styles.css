@@ -373,6 +373,11 @@ html, body {
 .counter-item { display: flex; align-items: center; gap: 5px; color: var(--text-muted); }
 .counter-item strong { color: var(--text); }
 .counter-sep { color: var(--border); font-size: 16px; }
+.counter-clear {
+  background: none; border: none; cursor: pointer;
+  color: var(--text-muted); font-size: 11px; padding: 0 2px; margin-left: 2px; line-height: 1;
+}
+.counter-clear:hover { color: var(--text); }
 .counter-dot {
   width: 8px; height: 8px; border-radius: 50%; flex-shrink: 0;
 }
@@ -522,6 +527,7 @@ html, body {
 
 /* ── Draft view — two-panel layout ──────────────────────────────────────── */
 .draft-week-label { font-size: 15px; font-weight: 700; }
+.week-label { font-size: 14px; font-weight: 600; color: var(--text-muted); }
 
 .draft-panels {
   flex: 1;

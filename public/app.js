@@ -170,7 +170,8 @@ async function loadLatestArticles(batch) {
       if (state.assignments[id] === undefined) state.assignments[id] = 'declined';
     }
 
-    renderArticles();
+    state.assignments = {};
+    await loadAndMergeAssignments();
     renderPublishedDrawer();
   } catch (err) {
     setStatus(`Could not load articles: ${err.message}`);
@@ -196,7 +197,7 @@ function filteredArticles() {
   const holdoverIds = new Set(state.holdovers.map(h => h.article_id));
   let arts = [...state.articles]
     .filter(a => state.assignments[a.id] !== 'declined')
-    .filter(a => !holdoverIds.has(a.id)); // shown separately at top as holdover cards
+    .filter(a => !holdoverIds.has(a.id));
   arts.sort((a, b) => (b.relevance_score || 0) - (a.relevance_score || 0));
 
   const { source, rank, date } = state.filters;
@@ -213,13 +214,48 @@ function filteredArticles() {
 // ── Assignment ────────────────────────────────────────────────────────────
 
 function setAssignment(articleId, section) {
-  // Toggle off if clicking same section again
+  const article = state.articles.find(a => a.id === articleId);
   if (state.assignments[articleId] === section) {
     delete state.assignments[articleId];
+    if (article?.url && section !== 'declined') {
+      DEL(`/api/assignments?url=${encodeURIComponent(article.url)}`).catch(() => {});
+    }
   } else {
     state.assignments[articleId] = section;
+    if (article?.url && section !== 'declined') {
+      POST('/api/assignments', {
+        url: article.url,
+        section,
+        title: article.title,
+        source_name: article.source_name,
+        article_id: article.id,
+      }).catch(() => {});
+    }
   }
-  renderArticles();
+
+  const newAssignment = state.assignments[articleId] || null;
+  const card = document.querySelector(`.article-card[data-id="${articleId}"]`);
+
+  if (section === 'declined' && newAssignment === 'declined') {
+    card?.remove();
+    renderDeclinedDrawer();
+  } else if (card) {
+    const colorMap = { this_week: 'sel-green', considered: 'sel-blue', save_for_future: 'sel-purple' };
+    const colorClass = newAssignment ? (colorMap[newAssignment] || '') : '';
+    card.className = 'article-card' + (colorClass ? ' ' + colorClass : '');
+
+    card.querySelectorAll('.assign-btn').forEach(btn => {
+      const s = btn.dataset.section;
+      btn.className = [
+        'assign-btn',
+        s === 'declined' ? 'decline-btn' : '',
+        s === 'this_week'       && newAssignment === 'this_week'       ? 'active-this-week'  : '',
+        s === 'considered'      && newAssignment === 'considered'      ? 'active-considered' : '',
+        s === 'save_for_future' && newAssignment === 'save_for_future' ? 'active-save'       : '',
+      ].filter(Boolean).join(' ');
+    });
+  }
+
   updateDraftToolbar();
   updateCounterBar();
 }
@@ -242,9 +278,72 @@ function updateCounterBar() {
 
   const bar = document.getElementById('counter-bar');
   bar.style.display = total > 0 ? 'flex' : 'none';
-  document.getElementById('n-this-week').textContent = nThis;
-  document.getElementById('n-considered').textContent = nCons;
-  document.getElementById('n-save').textContent = nSave;
+
+  const pills = [];
+  if (nThis) pills.push(`<span class="counter-item"><span class="counter-dot dot-green"></span>This week: <strong>${nThis}</strong><button class="counter-clear" data-section="this_week" title="Clear all">✕</button></span>`);
+  if (nCons) pills.push(`<span class="counter-item"><span class="counter-dot dot-blue"></span>Considered: <strong>${nCons}</strong><button class="counter-clear" data-section="considered" title="Clear all">✕</button></span>`);
+  if (nSave) pills.push(`<span class="counter-item"><span class="counter-dot dot-purple"></span>Save for later: <strong>${nSave}</strong><button class="counter-clear" data-section="save_for_future" title="Clear all">✕</button></span>`);
+  bar.innerHTML = pills.join('<span class="counter-sep">·</span>');
+
+  bar.querySelectorAll('.counter-clear').forEach(btn => {
+    btn.addEventListener('click', () => clearCategory(btn.dataset.section));
+  });
+}
+
+async function clearCategory(section) {
+  for (const [id, sec] of Object.entries(state.assignments)) {
+    if (sec === section) delete state.assignments[id];
+  }
+  DEL(`/api/assignments/category/${section}`).catch(() => {});
+  renderArticles();
+  updateDraftToolbar();
+  updateCounterBar();
+}
+
+async function loadAndMergeAssignments() {
+  try {
+    const assignments = await GET('/api/assignments');
+    if (!assignments?.length) {
+      renderArticles();
+      updateDraftToolbar();
+      updateCounterBar();
+      updateWeekLabels();
+      return;
+    }
+
+    const byUrl = {};
+    for (const a of assignments) byUrl[a.url] = a;
+
+    // Apply assignments to articles already in the current scan
+    for (const article of state.articles) {
+      if (byUrl[article.url]) {
+        state.assignments[article.id] = byUrl[article.url].section;
+        delete byUrl[article.url];
+      }
+    }
+
+    // Inject holdovers from previous scans (considered / save_for_future only)
+    for (const [url, a] of Object.entries(byUrl)) {
+      if (a.section === 'considered' || a.section === 'save_for_future') {
+        const holdoverId = a.article_id || url;
+        state.articles.push({
+          id: holdoverId,
+          url,
+          title: a.title || url,
+          source_name: a.source_name || '',
+          relevance_score: null,
+          relevance_tags: [],
+          is_holdover: true,
+        });
+        state.assignments[holdoverId] = a.section;
+      }
+    }
+  } catch {}
+
+  renderArticles();
+  updateDraftToolbar();
+  updateCounterBar();
+  updateWeekLabels();
 }
 
 function syncAssignmentsFromEntries() {
@@ -532,32 +631,9 @@ document.getElementById('dismissed-handle').addEventListener('click', () => {
 // ── Draft toolbar ─────────────────────────────────────────────────────────
 
 function updateDraftToolbar() {
-  const vals = Object.values(state.assignments);
-  let nThis = vals.filter(v => v === 'this_week').length;
-  let nCons = vals.filter(v => v === 'considered').length;
-  let nSave = vals.filter(v => v === 'save_for_future').length;
-
-  for (const h of state.holdovers) {
-    if (!state.assignments[h.article_id]) {
-      if (h.section === 'considered') nCons++;
-      else if (h.section === 'save_for_future') nSave++;
-    }
-  }
-
-  const toolbar = document.getElementById('draft-toolbar');
-
-  if (nThis + nCons + nSave === 0) {
-    toolbar.style.display = 'none';
-    return;
-  }
-
-  toolbar.style.display = 'flex';
-
-  document.getElementById('toolbar-counts').innerHTML = [
-    nThis ? `<span><span class="counter-dot dot-green"></span> This week: <strong>${nThis}</strong></span>` : '',
-    nCons ? `<span><span class="counter-dot dot-blue"></span> Considered: <strong>${nCons}</strong></span>` : '',
-    nSave ? `<span><span class="counter-dot dot-purple"></span> Save: <strong>${nSave}</strong></span>` : '',
-  ].filter(Boolean).join('');
+  const total = Object.values(state.assignments).filter(v => v !== 'declined').length;
+  const btn = document.getElementById('btn-draft');
+  if (btn) btn.disabled = total === 0;
 }
 
 // ── Manual URL add ────────────────────────────────────────────────────────
@@ -634,6 +710,30 @@ document.getElementById('btn-draft').addEventListener('click', async () => {
   }
 });
 
+// ── Week label helpers ────────────────────────────────────────────────────
+
+function getUpcomingFriday() {
+  const today = new Date();
+  const daysUntilFriday = (5 - today.getDay() + 7) % 7 || 7;
+  const friday = new Date(today);
+  friday.setDate(today.getDate() + daysUntilFriday);
+  return friday.toISOString().split('T')[0];
+}
+
+function getWeekLabel() {
+  const dateStr = state.currentDraftDate || getUpcomingFriday();
+  const d = new Date(dateStr + 'T12:00:00');
+  return 'Working on ' + d.toLocaleDateString('en-US', { month: 'short', day: 'numeric' });
+}
+
+function updateWeekLabels() {
+  const label = getWeekLabel();
+  const scanEl   = document.getElementById('scan-week-label');
+  const exportEl = document.getElementById('export-week-label');
+  if (scanEl)   scanEl.textContent   = label;
+  if (exportEl) exportEl.textContent = label;
+}
+
 /* ── DRAFT VIEW ──────────────────────────────────────────────────────── */
 
 // Local-session set of entry IDs declined or approved in the draft view
@@ -675,9 +775,9 @@ function renderDraft() {
   if (!state.currentDraftDate) return;
 
   const d = new Date(state.currentDraftDate + 'T12:00:00');
-  const label = d.toLocaleDateString('en-US', { weekday: 'long', month: 'long', day: 'numeric', year: 'numeric' });
-  document.getElementById('draft-week-label').textContent = `Week of ${label}`;
-  document.getElementById('export-week-label').textContent = `Sending Friday, ${label}`;
+  const shortLabel = d.toLocaleDateString('en-US', { month: 'short', day: 'numeric' });
+  document.getElementById('draft-week-label').textContent = `Working on ${shortLabel}`;
+  updateWeekLabels();
 
   renderSection('in_this_week');
   renderSection('considered');
@@ -1052,6 +1152,7 @@ document.getElementById('draft-declined-handle').addEventListener('click', () =>
 });
 
 document.getElementById('btn-back-to-scan').addEventListener('click', () => showView('scan'));
+document.getElementById('btn-back-to-draft').addEventListener('click', () => showView('draft'));
 
 // ── Dismiss old holdovers modal ───────────────────────────────────────────
 
@@ -1468,6 +1569,27 @@ document.getElementById('btn-copy-text').addEventListener('click', async () => {
   }
 });
 
+document.getElementById('btn-mark-sent').addEventListener('click', async () => {
+  if (!state.currentDraftDate) return alert('No draft loaded. Go to the Draft screen first.');
+  const btn = document.getElementById('btn-mark-sent');
+  btn.disabled = true;
+  btn.textContent = 'Closing week…';
+  try {
+    await POST(`/api/draft/${state.currentDraftDate}/mark-sent`, {});
+    for (const [id, sec] of Object.entries(state.assignments)) {
+      if (sec === 'this_week') delete state.assignments[id];
+    }
+    updateDraftToolbar();
+    updateCounterBar();
+    btn.textContent = '✓ Week closed';
+    document.getElementById('mark-sent-confirm').classList.remove('hidden');
+  } catch (err) {
+    alert(`Failed: ${err.message}`);
+    btn.disabled = false;
+    btn.textContent = 'Mark as sent ✓';
+  }
+});
+
 /* ── Utilities ───────────────────────────────────────────────────────── */
 
 function escHtml(str) {
@@ -1569,11 +1691,11 @@ function insertLinkInEditor(editorEl) {
     if (scanData.articles?.length) {
       state.articles = scanData.articles;
       state.scanBatch = scanData.batch;
-      // Auto-decline published articles
       for (const id of state.publishedIds) {
         if (state.assignments[id] === undefined) state.assignments[id] = 'declined';
       }
       setStatus(`Showing last scan — ${scanData.articles.length} articles.`);
+      await loadAndMergeAssignments();
     }
 
     renderArticles();

@@ -761,6 +761,52 @@ app.get('/api/preferences', (req, res) => {
   }
 });
 
+// ── Scan Assignments ──────────────────────────────────────────────────────────
+
+app.get('/api/assignments', async (req, res) => {
+  const { data, error } = await supabase.from('scan_assignments').select('*');
+  if (error) return res.status(500).json({ error: error.message });
+  res.json(data || []);
+});
+
+app.post('/api/assignments', async (req, res) => {
+  const { url, section, title, source_name, article_id } = req.body;
+  if (!url || !section) return res.status(400).json({ error: 'url and section required' });
+  const { data, error } = await supabase
+    .from('scan_assignments')
+    .upsert({ url, section, title, source_name, article_id, assigned_at: new Date().toISOString() }, { onConflict: 'url' })
+    .select().single();
+  if (error) return res.status(500).json({ error: error.message });
+  res.json(data);
+});
+
+app.delete('/api/assignments', async (req, res) => {
+  const url = req.query.url ? decodeURIComponent(req.query.url) : null;
+  if (!url) return res.status(400).json({ error: 'url required' });
+  const { error } = await supabase.from('scan_assignments').delete().eq('url', url);
+  if (error) return res.status(500).json({ error: error.message });
+  res.json({ ok: true });
+});
+
+app.delete('/api/assignments/category/:section', async (req, res) => {
+  const valid = ['this_week', 'considered', 'save_for_future'];
+  if (!valid.includes(req.params.section)) return res.status(400).json({ error: 'Invalid section' });
+  const { error } = await supabase.from('scan_assignments').delete().eq('section', req.params.section);
+  if (error) return res.status(500).json({ error: error.message });
+  res.json({ ok: true });
+});
+
+// Mark draft as sent: records timestamp + clears this_week assignments (holdovers persist)
+app.post('/api/draft/:weekDate/mark-sent', async (req, res) => {
+  const { error } = await supabase
+    .from('drafts')
+    .update({ sent_at: new Date().toISOString() })
+    .eq('week_date', req.params.weekDate);
+  if (error) return res.status(500).json({ error: error.message });
+  await supabase.from('scan_assignments').delete().eq('section', 'this_week');
+  res.json({ ok: true });
+});
+
 // ── SPA fallback ──────────────────────────────────────────────────────────────
 
 app.get('*', (req, res) => {

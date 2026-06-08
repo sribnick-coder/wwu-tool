@@ -66,10 +66,9 @@ CREATE INDEX IF NOT EXISTS idx_articles_scanned_at ON articles(scanned_at DESC);
 CREATE INDEX IF NOT EXISTS idx_draft_entries_draft_id ON draft_entries(draft_id);
 CREATE INDEX IF NOT EXISTS idx_draft_entries_section ON draft_entries(draft_id, section, position);
 
--- ── MIGRATION: run in Supabase SQL editor to enable multi-week holdover features ──
+-- ── MIGRATION: run in Supabase SQL editor ───────────────────────────────────
 
--- Articles that have been held in Considered or Save for later across weeks.
--- One row per article; section/dismissed_at update as the article moves.
+-- Holdover pool (structured multi-week holdovers with summaries)
 CREATE TABLE IF NOT EXISTS holdover_pool (
   id UUID PRIMARY KEY DEFAULT gen_random_uuid(),
   article_id UUID REFERENCES articles(id) ON DELETE CASCADE,
@@ -89,8 +88,21 @@ CREATE TABLE IF NOT EXISTS holdover_pool (
 
 CREATE INDEX IF NOT EXISTS idx_holdover_active ON holdover_pool(first_saved_at) WHERE dismissed_at IS NULL;
 
--- ── App settings (persistent key/value — stores OAuth tokens across deploys) ──
+-- App settings (persistent key/value — stores OAuth tokens across deploys)
 CREATE TABLE IF NOT EXISTS app_settings (
   key TEXT PRIMARY KEY,
   value JSONB
 );
+
+-- Persistent scan-screen assignments (survives page refresh; scan_assignments carries week-to-week)
+CREATE TABLE IF NOT EXISTS scan_assignments (
+  url TEXT PRIMARY KEY,
+  section TEXT NOT NULL CHECK (section IN ('this_week', 'considered', 'save_for_future')),
+  title TEXT,
+  source_name TEXT,
+  article_id UUID,
+  assigned_at TIMESTAMPTZ DEFAULT NOW()
+);
+
+-- Track when a newsletter was sent (used by "Mark as sent" to clear this_week)
+ALTER TABLE drafts ADD COLUMN IF NOT EXISTS sent_at TIMESTAMPTZ;

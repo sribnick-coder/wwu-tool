@@ -31,6 +31,7 @@
         <div class="toolbar-left">
           <button id="btn-scan" class="btn btn-primary">Refresh scan</button>
           <span id="scan-status" class="scan-status-text"></span>
+          <span id="scan-week-label" class="week-label"></span>
         </div>
         <div class="toolbar-right">
           <input id="manual-url-input" type="url" placeholder="Paste a URL to add manually…" class="url-input" />
@@ -46,15 +47,10 @@
             <option value="3">Last 3 days</option>
             <option value="7">Last 7 days</option>
           </select>
+          <button id="btn-draft" class="btn btn-primary" disabled>Draft &amp; organize →</button>
         </div>
       </div>
-      <div class="counter-bar" id="counter-bar" style="display:none">
-        <span class="counter-item" id="cnt-this-week"><span class="counter-dot dot-green"></span>This week: <strong id="n-this-week">0</strong></span>
-        <span class="counter-sep">·</span>
-        <span class="counter-item"><span class="counter-dot dot-blue"></span>Considered: <strong id="n-considered">0</strong></span>
-        <span class="counter-sep">·</span>
-        <span class="counter-item"><span class="counter-dot dot-purple"></span>Save for later: <strong id="n-save">0</strong></span>
-      </div>
+      <div class="counter-bar" id="counter-bar" style="display:none"></div>
 
       <div id="scan-progress" class="scan-progress hidden">
         <div class="progress-bar"><div id="progress-fill" class="progress-fill"></div></div>
@@ -97,10 +93,6 @@
         </div>
       </div>
 
-      <div class="draft-toolbar" id="draft-toolbar" style="display:none">
-        <div class="toolbar-counts" id="toolbar-counts"></div>
-        <button id="btn-draft" class="btn btn-primary btn-large">Draft &amp; organize →</button>
-      </div>
     </section>
 
     <!-- ── DRAFT VIEW ───────────────────────────────────────────────────────── -->
@@ -168,9 +160,13 @@
 
     <!-- ── EXPORT VIEW ──────────────────────────────────────────────────────── -->
     <section id="view-export" class="view">
+      <div class="view-toolbar">
+        <div class="toolbar-left">
+          <button id="btn-back-to-draft" class="btn btn-secondary">← Back</button>
+          <span id="export-week-label" class="week-label"></span>
+        </div>
+      </div>
       <div class="export-panel">
-        <h2>Export</h2>
-        <p class="export-week" id="export-week-label"></p>
 
         <div class="export-card">
           <div class="export-card-header">
@@ -201,6 +197,15 @@
           </div>
           <button id="btn-copy-text" class="btn btn-secondary btn-large">Copy plain text</button>
           <div id="text-copied" class="copy-confirm hidden">Copied!</div>
+        </div>
+
+        <div class="export-card export-card--close-week">
+          <div class="export-card-header">
+            <h3>Close this week</h3>
+            <p>Clears your "This week" picks and keeps Considered &amp; Save for later as holdovers for next week.</p>
+          </div>
+          <button id="btn-mark-sent" class="btn btn-secondary btn-large">Mark as sent ✓</button>
+          <div id="mark-sent-confirm" class="copy-confirm hidden">Week closed — holdovers carried forward.</div>
         </div>
       </div>
     </section>
