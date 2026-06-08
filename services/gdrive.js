@@ -77,7 +77,7 @@ async function isAuthorized() {
   return token !== null;
 }
 
-// Walk Google Drive folder path by name
+// Walk Google Drive folder path by name (supports shared/team drives)
 async function resolveFolderPath(drive, pathParts, parentId = 'root') {
   let currentParent = parentId;
 
@@ -86,6 +86,9 @@ async function resolveFolderPath(drive, pathParts, parentId = 'root') {
       q: `name = '${part.replace(/'/g, "\\'")}' and mimeType = 'application/vnd.google-apps.folder' and '${currentParent}' in parents and trashed = false`,
       fields: 'files(id, name)',
       pageSize: 10,
+      includeItemsFromAllDrives: true,
+      supportsAllDrives: true,
+      corpora: 'allDrives',
     });
 
     if (!res.data.files?.length) {
@@ -102,6 +105,9 @@ async function ensureYearFolder(drive, baseFolderId, year) {
   const res = await drive.files.list({
     q: `name = '${year}' and mimeType = 'application/vnd.google-apps.folder' and '${baseFolderId}' in parents and trashed = false`,
     fields: 'files(id)',
+    includeItemsFromAllDrives: true,
+    supportsAllDrives: true,
+    corpora: 'allDrives',
   });
 
   if (res.data.files?.length) return res.data.files[0].id;
@@ -113,6 +119,7 @@ async function ensureYearFolder(drive, baseFolderId, year) {
       parents: [baseFolderId],
     },
     fields: 'id',
+    supportsAllDrives: true,
   });
 
   return created.data.id;
@@ -179,24 +186,30 @@ async function createGoogleDoc(weekDate, entries) {
   const drive = google.drive({ version: 'v3', auth });
   const docs = google.docs({ version: 'v1', auth });
 
-  // Resolve folder path
-  const basePath = [
-    'A-Street Workspace',
-    'Internal Operations (Finance, HR, Legal, Internal Meetings, etc.)',
-    'Weekly Wrap Up',
-  ];
-  const year = new Date(weekDate).getFullYear();
+  // Resolve target folder — env var takes priority over path traversal
+  let folderId = process.env.GDRIVE_FOLDER_ID || null;
 
-  let folderId;
-  try {
-    const baseFolderId = await resolveFolderPath(drive, basePath);
-    folderId = await ensureYearFolder(drive, baseFolderId, year);
-  } catch (err) {
-    if (err.message.startsWith('FOLDER_NOT_FOUND:')) {
-      const missing = err.message.split(':')[1];
-      throw new Error(`Google Drive folder not found: "${missing}". Please check that the folder exists and your Google account has access.`);
+  if (!folderId) {
+    const basePath = [
+      'A-Street Workspace',
+      'Internal Operations (Finance, HR, Legal, Internal Meetings, etc.)',
+      'Weekly Wrap Up',
+    ];
+    const year = new Date(weekDate).getFullYear();
+    try {
+      const baseFolderId = await resolveFolderPath(drive, basePath);
+      folderId = await ensureYearFolder(drive, baseFolderId, year);
+    } catch (err) {
+      if (err.message.startsWith('FOLDER_NOT_FOUND:')) {
+        const missing = err.message.split(':')[1];
+        throw new Error(
+          `Google Drive folder not found: "${missing}". ` +
+          `Set the GDRIVE_FOLDER_ID env var to the ID of the Weekly Wrap Up folder ` +
+          `(copy it from the URL when you have that folder open in Drive).`
+        );
+      }
+      throw err;
     }
-    throw err;
   }
 
   // Format title
@@ -207,12 +220,13 @@ async function createGoogleDoc(weekDate, entries) {
   const docRes = await docs.documents.create({ requestBody: { title } });
   const docId = docRes.data.documentId;
 
-  // Move to folder
+  // Move to target folder (supportsAllDrives needed for shared drives)
   await drive.files.update({
     fileId: docId,
     addParents: folderId,
     removeParents: 'root',
     fields: 'id, parents',
+    supportsAllDrives: true,
   });
 
   // Build and apply formatting
@@ -233,6 +247,7 @@ async function createGoogleDoc(weekDate, entries) {
       fileId: docId,
       requestBody: { type: 'user', role: 'commenter', emailAddress: email },
       sendNotificationEmail: true,
+      supportsAllDrives: true,
     }).catch(err => console.warn(`Could not share with ${email}:`, err.message));
   }
 
