@@ -45,11 +45,14 @@ const DEL = (path) => api('DELETE', path);
 
 /* ── View routing ─────────────────────────────────────────────────────── */
 
-function showView(name) {
+function showView(name, pushHistory = true) {
   document.querySelectorAll('.view').forEach(v => v.classList.remove('active'));
   document.querySelectorAll('.tab-btn').forEach(b => b.classList.remove('active'));
   document.getElementById(`view-${name}`).classList.add('active');
   document.querySelector(`[data-view="${name}"]`).classList.add('active');
+
+  if (pushHistory) history.pushState({ view: name }, '', `#${name}`);
+  else             history.replaceState({ view: name }, '', `#${name}`);
 
   if (name === 'draft') refreshDraftView();
   if (name === 'scan') renderArticles();
@@ -58,6 +61,11 @@ function showView(name) {
 
 document.querySelectorAll('.tab-btn').forEach(btn => {
   btn.addEventListener('click', () => showView(btn.dataset.view));
+});
+
+window.addEventListener('popstate', (e) => {
+  const name = e.state?.view || window.location.hash.replace('#', '') || 'scan';
+  if (['scan', 'draft', 'export'].includes(name)) showView(name, false);
 });
 
 /* ── OAuth status ─────────────────────────────────────────────────────── */
@@ -80,7 +88,7 @@ async function checkOAuthStatus() {
       state.oauthConnected = true;
       badge.textContent = '● Google Drive connected';
       badge.className = 'oauth-badge connected';
-      history.replaceState({}, '', '/');
+      history.replaceState({ view: 'scan' }, '', '#scan');
     }
   } catch {}
 }
@@ -88,6 +96,7 @@ async function checkOAuthStatus() {
 /* ── SCAN VIEW ────────────────────────────────────────────────────────── */
 
 let scanPollTimer = null;
+let lastScanErrors = [];
 
 document.getElementById('btn-scan').addEventListener('click', startScan);
 
@@ -127,7 +136,9 @@ function pollScan(scanId) {
         const btn = document.getElementById('btn-scan');
         btn.disabled = false;
         btn.textContent = 'Refresh scan';
-        setStatus(job.errors?.length ? `Scan complete. ${job.errors.length} source(s) failed.` : 'Scan complete.');
+        lastScanErrors = job.errors || [];
+        setStatus(lastScanErrors.length ? `Scan complete. ${lastScanErrors.length} source(s) failed.` : 'Scan complete.');
+        renderScanErrors();
         await loadLatestArticles(job.batch);
       }
     } catch {
@@ -138,6 +149,17 @@ function pollScan(scanId) {
 
 function setStatus(text) {
   document.getElementById('scan-status').textContent = text;
+}
+
+function renderScanErrors() {
+  const panel = document.getElementById('scan-errors-panel');
+  if (!panel) return;
+  if (!lastScanErrors.length) { panel.classList.add('hidden'); return; }
+  panel.classList.remove('hidden');
+  panel.innerHTML = `<details class="scan-err-details">
+    <summary>${lastScanErrors.length} source(s) failed to load — click for details</summary>
+    <ul class="scan-err-list">${lastScanErrors.map(e => `<li><strong>${escHtml(e.source)}</strong>: ${escHtml(e.error || 'unknown error')}</li>`).join('')}</ul>
+  </details>`;
 }
 
 function showProgress(pct, label, text) {
@@ -261,10 +283,18 @@ function setAssignment(articleId, section) {
 }
 
 function updateCounterBar() {
-  const vals = Object.values(state.assignments);
-  let nThis = vals.filter(v => v === 'this_week').length;
-  let nCons = vals.filter(v => v === 'considered').length;
-  let nSave = vals.filter(v => v === 'save_for_future').length;
+  // Only count assignments for articles actually visible in the current scan
+  const visibleIds = new Set([
+    ...state.articles.map(a => a.id),
+    ...state.holdovers.map(h => h.article_id),
+  ]);
+  let nThis = 0, nCons = 0, nSave = 0;
+  for (const [id, v] of Object.entries(state.assignments)) {
+    if (!visibleIds.has(id)) continue;
+    if (v === 'this_week') nThis++;
+    else if (v === 'considered') nCons++;
+    else if (v === 'save_for_future') nSave++;
+  }
 
   // Count holdovers that haven't been explicitly reassigned or dismissed
   for (const h of state.holdovers) {
@@ -461,7 +491,7 @@ function buildHoldoverCard(h) {
 
   card.innerHTML = `
     <div class="card-top">
-      <div class="card-badges"><span class="badge badge-holdover">${escHtml(sectionLabel)} · ${weeksHeld}w held</span></div>
+      <div class="card-badges"><span class="badge badge-holdover">${escHtml(sectionLabel)} · ${weeksHeld === 0 ? 'new' : weeksHeld + 'w held'}</span></div>
       <span class="card-headline">${escHtml(h.headline)}</span>
     </div>
     <div class="assign-btns">
@@ -1678,6 +1708,11 @@ function insertLinkInEditor(editorEl) {
 (async function init() {
   await checkOAuthStatus();
   initRailResize();
+
+  // Respect URL hash on load; default to scan
+  const hashView = window.location.hash.replace('#', '');
+  const initialView = ['scan', 'draft', 'export'].includes(hashView) ? hashView : 'scan';
+
   try {
     const [scanData, holdoverData, publishedData] = await Promise.all([
       GET('/api/articles/latest'),
@@ -1698,8 +1733,9 @@ function insertLinkInEditor(editorEl) {
       await loadAndMergeAssignments();
     }
 
-    renderArticles();
     renderPublishedDrawer();
     loadAndRenderDismissedDrawer();
   } catch {}
+
+  showView(initialView, false);
 })();
