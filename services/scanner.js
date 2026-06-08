@@ -4,8 +4,13 @@ const cheerio = require('cheerio');
 const supabase = require('./db');
 
 const parser = new RSSParser({
-  timeout: 12000,
-  headers: { 'User-Agent': 'Mozilla/5.0 (Macintosh; Intel Mac OS X 10_15_7) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/124.0.0.0 Safari/537.36' },
+  timeout: 15000,
+  headers: {
+    'User-Agent': 'Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/125.0.0.0 Safari/537.36',
+    'Accept': 'application/rss+xml, application/atom+xml, application/xml;q=0.9, text/xml;q=0.8, */*;q=0.7',
+    'Accept-Language': 'en-US,en;q=0.9',
+    'Cache-Control': 'no-cache',
+  },
   requestOptions: { rejectUnauthorized: false },
   defaultRSS: 2.0,
   xml2js: { strict: false, trim: true },
@@ -17,48 +22,58 @@ const HIGH_VOLUME_SOURCES = [
   'Wall Street Journal', 'Washington Post Education', 'K-12 Dive',
 ];
 
-// RSS URLs for sources where the homepage URL != feed URL
+// Sources confirmed to have no working RSS feed — skipped during scan to avoid noise.
+// To re-enable a source, remove it from this set and add a working feed URL below.
+const NO_FEED_SOURCES = new Set([
+  'EdWeek',                  // RSS discontinued as of 2025
+  'AFT',                     // feed URL returns empty XML, no active feed
+  'U.S. Dept. of Education', // site offers email subscription only, no feed
+  'Games for Change',        // site permanently blocks automated fetches
+  'NCTQ',                    // feed URL gone, no alternative found
+  'Deans for Impact',        // no RSS feed on site
+  'Stanford SCALE',          // no RSS feed on site
+  'ANET',                    // no RSS feed, returns 406
+  'Reading to Lead',         // Substack deleted
+  'APM Reports',             // only a podcast feed, no text news feed
+]);
+
+// RSS URLs for sources where the homepage URL != feed URL.
+// URLs verified June 2026 — update here when feeds move.
 const RSS_URL_OVERRIDES = {
-  'https://www.edweek.org/': 'https://www.edweek.org/rss2.0.xml',
-  'https://www.the74million.org/': 'https://www.the74million.org/feed/',
-  'https://www.chalkbeat.org/': 'https://www.chalkbeat.org/rss/feed.xml',
-  'https://www.k12dive.com/': 'https://www.k12dive.com/feeds/news.rss',
-  'https://www.hechingerreport.org/': 'https://hechingerreport.org/feed/',
-  'https://www.edsurge.com/': 'https://www.edsurge.com/rss.xml',
-  'https://www.educationnext.org/': 'https://www.educationnext.org/feed/',
-  'https://www.npr.org/sections/education/': 'https://feeds.npr.org/1013/rss.xml',
-  'https://19thnews.org/topics/education/': 'https://19thnews.org/feed/',
+  // ── Publications ──────────────────────────────────────────────────────────
+  'https://www.the74million.org/':          'https://www.the74million.org/feed/',         // 403 on Railway — keep trying
+  'https://www.chalkbeat.org/':             'https://www.chalkbeat.org/arc/outboundfeeds/rss/',  // updated June 2026
+  'https://www.k12dive.com/':               'https://www.k12dive.com/feeds/news/',         // updated June 2026
+  'https://www.hechingerreport.org/':       'https://hechingerreport.org/feed/',
+  'https://www.edsurge.com/':              'https://www.edsurge.com/articles_rss',        // updated June 2026
+  'https://www.educationnext.org/':         'https://www.educationnext.org/feed/',
+  'https://www.npr.org/sections/education/':'https://feeds.npr.org/1013/rss.xml',
+  'https://19thnews.org/topics/education/': 'https://19thnews.org/feed/',                  // 402 paywalled
   'https://www.propublica.org/topics/education': 'https://www.propublica.org/feeds/propublica/main',
   'https://theconversation.com/us/education': 'https://theconversation.com/us/education.atom',
-  'https://fordhaminstitute.org/': 'https://fordhaminstitute.org/national/commentary/feed',
-  'https://bellwether.org/': 'https://bellwether.org/feed/',
-  'https://www.brookings.edu/topics/education-2/': 'https://www.brookings.edu/wp-json/wp/v2/posts?categories=4&per_page=10&_fields=link,title,date,excerpt',
-  'https://crpe.org/': 'https://crpe.org/feed/',
-  'https://www.future-ed.org/': 'https://www.future-ed.org/feed/',
-  'https://www.nctq.org/research-insights/': 'https://www.nctq.org/nctq/research/publications.rss',
-  'https://edunomicslab.org/': 'https://edunomicslab.org/feed/',
-  'https://deansforimpact.org/': 'https://deansforimpact.org/feed',
-  'https://eduwonk.com/': 'https://eduwonk.com/feed',
-  'https://aldemanoneducation.substack.com/': 'https://aldemanoneducation.substack.com/feed',
-  'https://timdaly.substack.com/': 'https://timdaly.substack.com/feed',
-  'https://danmeyer.substack.com/': 'https://danmeyer.substack.com/feed',
-  'https://dylanwkane.substack.com/': 'https://dylanwkane.substack.com/feed',
-  'https://michaelpershan.substack.com/': 'https://michaelpershan.substack.com/feed',
-  'https://robertpondiscio.substack.com/': 'https://robertpondiscio.substack.com/feed',
-  'https://edtechinsiders.substack.com/': 'https://edtechinsiders.substack.com/feed',
-  'https://benriley.substack.com/': 'https://benriley.substack.com/feed',
-  'https://learningdispatch.substack.com/': 'https://learningdispatch.substack.com/feed',
-  'https://philonedtech.com/': 'https://philonedtech.com/feed/',
-  'https://readingtolead.substack.com/': 'https://readingtolead.substack.com/feed',
-  'https://www.ed.gov/about/news/press-release': 'https://www.ed.gov/feed',
+  'https://calmatters.org/':                'https://calmatters.org/feed/',
   'https://www.nytimes.com/section/education': 'https://rss.nytimes.com/services/xml/rss/nyt/Education.xml',
-  'https://www.washingtonpost.com/education/': 'https://feeds.washingtonpost.com/rss/lifestyle/education',
-  'https://calmatters.org/': 'https://calmatters.org/feed/',
-  'https://gamesforchange.org/': 'https://gamesforchange.org/feed/',
-  'https://www.achievementnetwork.org/': 'https://www.achievementnetwork.org/feed/',
-  'https://scale.stanford.edu/': 'https://scale.stanford.edu/news/feed',
-  'https://www.aft.org/': 'https://www.aft.org/rss.xml',
-  'https://reachcapital.com/': 'https://reachcapital.com/feed/',
+  'https://www.washingtonpost.com/education/': 'https://feeds.washingtonpost.com/rss/national', // updated June 2026; /lifestyle/education was dead
+  // ── Think tanks ───────────────────────────────────────────────────────────
+  'https://fordhaminstitute.org/':          'https://fordhaminstitute.org/feed',           // updated June 2026
+  'https://bellwether.org/':                'https://bellwether.org/feed/',
+  'https://www.brookings.edu/topics/education-2/': 'https://www.brookings.edu/feed/',      // WP JSON category ID was broken
+  'https://crpe.org/':                      'https://crpe.org/feed/',
+  'https://www.future-ed.org/':             'https://www.future-ed.org/feed/',
+  'https://edunomicslab.org/':              'https://edunomicslab.org/feed/',
+  'https://eduwonk.com/':                   'https://eduwonk.com/feed',
+  'https://reachcapital.com/':              'https://reachcapital.com/feed/',
+  // ── Newsletters ───────────────────────────────────────────────────────────
+  'https://aldemanoneducation.substack.com/': 'https://www.chadaldeman.com/feed',          // moved to personal site
+  'https://timdaly.substack.com/':          'https://www.educationdaly.us/feed',           // moved to educationdaly.us
+  'https://danmeyer.substack.com/':         'https://danmeyer.substack.com/feed',
+  'https://dylanwkane.substack.com/':       'https://fivetwelvethirteen.substack.com/feed', // renamed blog
+  'https://michaelpershan.substack.com/':   'https://michaelpershan.substack.com/feed',
+  'https://robertpondiscio.substack.com/':  'https://thenext30years.substack.com/feed',    // moved to "The Next 30 Years"
+  'https://edtechinsiders.substack.com/':   'https://edtechinsiders.substack.com/feed',
+  'https://benriley.substack.com/':         'https://buildcognitiveresonance.substack.com/feed', // renamed
+  'https://learningdispatch.substack.com/': 'https://carlhendrick.substack.com/feed',      // moved to Carl Hendrick's Substack
+  'https://philonedtech.com/':              'https://philonedtech.substack.com/feed',      // site moved to Substack
 };
 
 function getRssFeedUrl(source) {
@@ -187,9 +202,16 @@ async function runScan(scanBatch, windowDays, onProgress) {
   let completed = 0;
 
   for (const source of sources) {
+    completed++;
+
+    // Skip sources confirmed to have no working feed
+    if (NO_FEED_SOURCES.has(source.name)) {
+      onProgress({ completed, total: sources.length, source: source.name, ok: true, skipped: true });
+      continue;
+    }
+
     const result = await scanSource(source, windowDays);
     results.push(result);
-    completed++;
     onProgress({ completed, total: sources.length, source: source.name, ok: result.ok, error: result.error });
 
     // Upsert articles into DB
