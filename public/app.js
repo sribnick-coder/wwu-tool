@@ -723,10 +723,11 @@ function buildMainEntry(entry) {
   const badgesHtml = (portfolioBadge || paywallBadge)
     ? `<div class="entry-badges">${portfolioBadge}${paywallBadge}</div>` : '';
 
-  const readText = entry.summary ? escHtml(entry.summary) : 'Generating summary…';
+  const summaryHtml = renderSummaryHtml(entry.summary || '');
   const readClass = entry.summary
     ? 'entry-summary-read'
     : 'entry-summary-read entry-summary-placeholder';
+  const readContent = entry.summary ? summaryHtml : 'Generating summary…';
 
   const isApproved = draftApproved.has(entry.id);
   if (isApproved) card.classList.add('approved');
@@ -745,8 +746,12 @@ function buildMainEntry(entry) {
       </div>
     </div>
     ${badgesHtml}
-    <p class="${readClass}">${readText}</p>
-    <textarea class="entry-summary hidden" data-id="${entry.id}" rows="5">${escHtml(entry.summary || '')}</textarea>
+    <div class="${readClass}">${readContent}</div>
+    <div class="rte-toolbar hidden">
+      <button type="button" class="rte-btn" data-action="link">🔗 Add / remove link</button>
+      <span class="rte-hint">Select text, then click to link it</span>
+    </div>
+    <div class="entry-summary-editor hidden" contenteditable="true">${summaryHtml}</div>
     <div class="entry-card-footer--main">
       <a class="entry-source-link" href="${escHtml(entry.article_url || '#')}" target="_blank" rel="noopener">
         (${escHtml(entry.source_name || 'Source')}) ↗
@@ -774,30 +779,35 @@ function buildMainEntry(entry) {
     }
   });
 
-  const editBtn = card.querySelector('.btn-edit');
-  const readEl  = card.querySelector('.entry-summary-read');
-  const editEl  = card.querySelector('.entry-summary');
+  const editBtn    = card.querySelector('.btn-edit');
+  const readEl     = card.querySelector('.entry-summary-read');
+  const editEl     = card.querySelector('.entry-summary-editor');
+  const toolbarEl  = card.querySelector('.rte-toolbar');
 
   editBtn.addEventListener('click', () => {
     const isEditing = !editEl.classList.contains('hidden');
     if (isEditing) {
-      const newSummary = editEl.value;
-      readEl.textContent = newSummary;
-      readEl.className = 'entry-summary-read';
+      const newSummary = sanitizeSummaryHtml(editEl.innerHTML);
+      readEl.innerHTML = newSummary || 'Generating summary…';
+      readEl.className = newSummary ? 'entry-summary-read' : 'entry-summary-read entry-summary-placeholder';
       readEl.classList.remove('hidden');
       editEl.classList.add('hidden');
+      toolbarEl.classList.add('hidden');
       editBtn.textContent = 'Edit';
       const e = state.entries.find(x => x.id === entry.id);
       if (e) e.summary = newSummary;
       PUT(`/api/draft/entry/${entry.id}`, { summary: newSummary }).catch(() => {});
     } else {
-      editEl.value = readEl.textContent;
+      editEl.innerHTML = renderSummaryHtml(entry.summary || '');
       editEl.classList.remove('hidden');
+      toolbarEl.classList.remove('hidden');
       readEl.classList.add('hidden');
       editBtn.textContent = 'Done';
       editEl.focus();
     }
   });
+
+  card.querySelector('[data-action="link"]')?.addEventListener('click', () => insertLinkInEditor(editEl));
 
   card.querySelector('[data-action="regen"]')?.addEventListener('click', () => regenerateEntry(entry.id));
   card.querySelector('[data-action="paywall"]')?.addEventListener('click', () => openPaywallModal(entry.id));
@@ -811,7 +821,7 @@ function buildConsideredEntry(entry) {
   card.dataset.id = entry.id;
 
   const summaryContent = entry.summary
-    ? `<textarea class="entry-summary" data-id="${entry.id}" rows="3">${escHtml(entry.summary)}</textarea>`
+    ? `<div class="entry-summary-editor entry-summary-considered" data-id="${entry.id}" contenteditable="true">${renderSummaryHtml(entry.summary)}</div>`
     : `<div class="entry-summary-placeholder">No summary — click ↻</div>`;
 
   const badges = [
@@ -845,13 +855,16 @@ function buildConsideredEntry(entry) {
     </div>
   `;
 
-  const textarea = card.querySelector('.entry-summary');
-  if (textarea) {
-    textarea.addEventListener('blur', async () => {
-      const newSummary = textarea.value;
+  const editorEl = card.querySelector('.entry-summary-considered');
+  if (editorEl) {
+    editorEl.addEventListener('blur', async () => {
+      const newSummary = sanitizeSummaryHtml(editorEl.innerHTML);
       const e = state.entries.find(x => x.id === entry.id);
       if (e) e.summary = newSummary;
       await PUT(`/api/draft/entry/${entry.id}`, { summary: newSummary }).catch(() => {});
+    });
+    editorEl.addEventListener('keydown', e => {
+      if (e.key === 'Enter' && !e.shiftKey) { e.preventDefault(); editorEl.blur(); }
     });
   }
 
@@ -948,12 +961,13 @@ async function regenerateEntry(id) {
 
     if (entry.section === 'in_this_week') {
       const readEl = card?.querySelector('.entry-summary-read');
-      const editEl = card?.querySelector('.entry-summary');
-      if (readEl) { readEl.textContent = updated.summary || ''; readEl.className = 'entry-summary-read'; }
-      if (editEl) editEl.value = updated.summary || '';
+      const editEl = card?.querySelector('.entry-summary-editor');
+      const html = renderSummaryHtml(updated.summary || '');
+      if (readEl) { readEl.innerHTML = html; readEl.className = 'entry-summary-read'; }
+      if (editEl) editEl.innerHTML = html;
     } else {
-      const textarea = card?.querySelector('.entry-summary');
-      if (textarea) textarea.value = updated.summary || '';
+      const editorEl = card?.querySelector('.entry-summary-considered');
+      if (editorEl) editorEl.innerHTML = renderSummaryHtml(updated.summary || '');
       else if (card) renderSection(entry.section);
     }
   } catch (err) {
@@ -1464,6 +1478,77 @@ function escHtml(str) {
     .replace(/>/g, '&gt;')
     .replace(/"/g, '&quot;')
     .replace(/'/g, '&#39;');
+}
+
+// Render a summary (plain text or HTML with <a> tags) safely for innerHTML.
+function renderSummaryHtml(summary) {
+  if (!summary) return '';
+  if (/<a[\s>]/i.test(summary)) return sanitizeSummaryHtml(summary);
+  return escHtml(summary);
+}
+
+// Strip everything except <a href="..."> links; return safe HTML.
+function sanitizeSummaryHtml(html) {
+  if (!html) return '';
+  const tmp = document.createElement('div');
+  tmp.innerHTML = html;
+  const walk = (node) => {
+    for (const child of [...node.childNodes]) {
+      if (child.nodeType === Node.ELEMENT_NODE) {
+        if (child.tagName === 'A') {
+          const href = child.getAttribute('href') || '';
+          [...child.attributes].forEach(a => child.removeAttribute(a.name));
+          if (/^https?:|^mailto:/i.test(href)) {
+            child.setAttribute('href', href);
+            child.setAttribute('target', '_blank');
+            child.setAttribute('rel', 'noopener');
+          }
+          walk(child);
+        } else {
+          const parent = child.parentNode;
+          while (child.firstChild) parent.insertBefore(child.firstChild, child);
+          parent.removeChild(child);
+        }
+      }
+    }
+  };
+  walk(tmp);
+  return tmp.innerHTML;
+}
+
+// Wrap selected text in the given editor element with an <a> link.
+// If URL is empty and cursor is inside a link, remove that link.
+function insertLinkInEditor(editorEl) {
+  editorEl.focus();
+  const sel = window.getSelection();
+  if (!sel || !editorEl.contains(sel.anchorNode)) return;
+
+  // If cursor is inside a link with no selection, offer to remove it
+  const existingLink = sel.anchorNode?.parentElement?.closest('a');
+  if (existingLink && sel.isCollapsed) {
+    existingLink.replaceWith(document.createTextNode(existingLink.textContent));
+    return;
+  }
+
+  if (sel.isCollapsed) { alert('Select the text you want to turn into a link first.'); return; }
+
+  const url = prompt('Enter URL:', 'https://');
+  if (url === null) return; // cancelled
+  if (!url.trim()) {
+    // Empty URL — remove link if selected text is inside one
+    if (existingLink) existingLink.replaceWith(document.createTextNode(existingLink.textContent));
+    return;
+  }
+
+  const range = sel.getRangeAt(0);
+  const content = range.extractContents();
+  const link = document.createElement('a');
+  link.href = url;
+  link.target = '_blank';
+  link.rel = 'noopener';
+  link.appendChild(content);
+  range.insertNode(link);
+  sel.removeAllRanges();
 }
 
 /* ── Init ────────────────────────────────────────────────────────────── */

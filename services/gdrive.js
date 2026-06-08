@@ -125,6 +125,36 @@ async function ensureYearFolder(drive, baseFolderId, year) {
   return created.data.id;
 }
 
+// Parse a summary string (plain text or HTML with <a> links) into
+// flat [{text, url}] parts for Google Docs API insertion.
+function parseSummaryParts(html) {
+  if (!html) return [];
+  const parts = [];
+  const re = /<a[^>]+href=["']([^"']+)["'][^>]*>([\s\S]*?)<\/a>|([^<]+)|<[^>]*>/gi;
+  let match;
+  while ((match = re.exec(html)) !== null) {
+    if (match[1] !== undefined) {
+      // Anchor tag: extract URL and inner text
+      const url = match[1];
+      const text = match[2]
+        .replace(/<[^>]*>/g, '')
+        .replace(/&amp;/g, '&').replace(/&lt;/g, '<').replace(/&gt;/g, '>').replace(/&nbsp;/g, ' ');
+      if (text) parts.push({ text, url });
+    } else if (match[3] !== undefined) {
+      // Plain text node
+      const text = match[3]
+        .replace(/&amp;/g, '&').replace(/&lt;/g, '<').replace(/&gt;/g, '>').replace(/&nbsp;/g, ' ');
+      if (text) parts.push({ text, url: null });
+    }
+    // Other HTML tags skipped
+  }
+  // Fallback for plain text with no HTML at all
+  if (!parts.length && html.trim()) {
+    parts.push({ text: html.replace(/<[^>]*>/g, ''), url: null });
+  }
+  return parts;
+}
+
 function formatDocBody(draft, entries) {
   const sections = {
     in_this_week: entries.filter(e => e.section === 'in_this_week').sort((a, b) => a.position - b.position),
@@ -134,49 +164,62 @@ function formatDocBody(draft, entries) {
 
   const footer = `Thank you for reading the A-Street Weekly Wrap-Up, a collection of notable news, announcements, and opinions gathered from a broad scan of PreK-12 media. We curate the selection based on what we think might be most relevant, thought-provoking, and helpful to the A-Street community. We endeavor to include a variety of perspectives and views beyond just our own. Questions, comments, or suggestions? We'd love to hear from you at hello@astreet.com.\n\nWas this forwarded to you? Please subscribe!`;
 
-  // Build requests array for Google Docs batchUpdate
   const requests = [];
   let cursor = 1;
 
-  function insertText(text, bold = false, fontSize = 11, color = null) {
-    requests.push({
-      insertText: { location: { index: cursor }, text },
-    });
-    const textLen = text.length;
+  function insertChunk(text, { bold = false, fontSize = 11, color = null, url = null } = {}) {
+    if (!text) return;
+    requests.push({ insertText: { location: { index: cursor }, text } });
+    const len = text.length;
     const style = { bold, fontSize: { magnitude: fontSize, unit: 'PT' } };
-    if (color) style.foregroundColor = { color: { rgbColor: color } };
+    const fields = ['bold', 'fontSize'];
+    if (color) { style.foregroundColor = { color: { rgbColor: color } }; fields.push('foregroundColor'); }
+    if (url) { style.link = { url }; fields.push('link'); }
     requests.push({
       updateTextStyle: {
-        range: { startIndex: cursor, endIndex: cursor + textLen },
+        range: { startIndex: cursor, endIndex: cursor + len },
         textStyle: style,
-        fields: 'bold,fontSize' + (color ? ',foregroundColor' : ''),
+        fields: fields.join(','),
       },
     });
-    cursor += textLen;
+    cursor += len;
   }
 
-  // Section: In this week
-  insertText('In this week\n', true, 14, { red: 0.247, green: 0.698, blue: 0.310 });
-
-  for (const entry of sections.in_this_week) {
-    const line = `${entry.headline}: ${entry.summary || ''}\n\n`;
-    insertText(line, false, 11);
+  function insertEntry(entry, fontSize = 11) {
+    // Bold headline
+    if (entry.headline) {
+      insertChunk(entry.headline, { bold: true, fontSize });
+      insertChunk(': ', { bold: false, fontSize });
+    }
+    // Summary — may be plain text or HTML with <a> links
+    for (const part of parseSummaryParts(entry.summary || '')) {
+      insertChunk(part.text, { bold: false, fontSize, url: part.url || undefined });
+    }
+    // Source as hyperlink
+    if (entry.source_name) {
+      insertChunk(` (${entry.source_name})`, {
+        bold: false,
+        fontSize,
+        url: entry.article_url || undefined,
+      });
+    }
+    insertChunk('\n\n', { bold: false, fontSize });
   }
+
+  // In this week
+  insertChunk('In this week\n', { bold: true, fontSize: 14, color: { red: 0.247, green: 0.698, blue: 0.310 } });
+  for (const entry of sections.in_this_week) insertEntry(entry, 11);
 
   // Footer
-  insertText(footer + '\n\n', false, 10);
+  insertChunk(footer + '\n\n', { bold: false, fontSize: 10 });
 
-  // Section: Considered
-  insertText('Considered (not included this week)\n', true, 14, { red: 0.247, green: 0.698, blue: 0.310 });
-  for (const entry of sections.considered) {
-    insertText(`${entry.headline}: ${entry.summary || ''}\n\n`, false, 10);
-  }
+  // Considered
+  insertChunk('Considered (not included this week)\n', { bold: true, fontSize: 14, color: { red: 0.247, green: 0.698, blue: 0.310 } });
+  for (const entry of sections.considered) insertEntry(entry, 10);
 
-  // Section: Save for future
-  insertText('Save for future\n', true, 14, { red: 0.247, green: 0.698, blue: 0.310 });
-  for (const entry of sections.save_for_future) {
-    insertText(`${entry.headline}: ${entry.summary || ''}\n\n`, false, 10);
-  }
+  // Save for future
+  insertChunk('Save for future\n', { bold: true, fontSize: 14, color: { red: 0.247, green: 0.698, blue: 0.310 } });
+  for (const entry of sections.save_for_future) insertEntry(entry, 10);
 
   return requests;
 }

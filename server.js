@@ -691,8 +691,13 @@ app.get('/api/export/:weekDate/text', async (req, res) => {
     .order('position');
 
   const text = entries.map(e => {
-    const summary = (e.summary || '').replace(/\([^\)]+\)\s*$/, '').trim();
-    return `**${e.headline}:** ${summary} (${e.source_name || 'Source'} — ${e.article_url || ''})`;
+    // Strip HTML tags; convert <a> links to "text (url)" form
+    const plain = (e.summary || '')
+      .replace(/<a[^>]+href=["']([^"']+)["'][^>]*>([^<]*)<\/a>/gi, '$2 ($1)')
+      .replace(/<[^>]*>/g, '')
+      .replace(/&amp;/g, '&').replace(/&lt;/g, '<').replace(/&gt;/g, '>')
+      .trim();
+    return `**${e.headline}:** ${plain} (${e.source_name || 'Source'} — ${e.article_url || ''})`;
   }).join('\n\n');
 
   const footer = `\nThank you for reading the A-Street Weekly Wrap-Up, a collection of notable news, announcements, and opinions gathered from a broad scan of PreK-12 media. We curate the selection based on what we think might be most relevant, thought-provoking, and helpful to the A-Street community. We endeavor to include a variety of perspectives and views beyond just our own. Questions, comments, or suggestions? We'd love to hear from you at hello@astreet.com.\n\nWas this forwarded to you? Please subscribe!`;

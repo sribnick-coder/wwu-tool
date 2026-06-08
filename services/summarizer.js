@@ -43,10 +43,21 @@ SUMMARY RULES:
 - For research/data pieces, lead with the key finding and its implication — not methodology.
 - If the article mentions a portfolio company, flag it: "Amplify's Dan Meyer, an A-Street portfolio company, ..."
 - If the article is by a known A-Street advisor or EIR, note their relationship: "A-Street Executive-in-Residence Jordan Meranus..."
-- Do NOT include any link, URL, or source citation at the end. The source is shown separately in the UI.
+- Do NOT include any link, URL, or source citation at the end. The source is appended automatically.
 - Never write "Read more" or "Click here."
 - Never invent facts. If the article is paywalled and full text is unavailable, write the best summary from the headline and preview, and note at the end: [Summary based on headline/preview — full text paywalled]
-- Return ONLY the summary text. No preamble, no explanation, no markdown formatting.`;
+- Return ONLY the 2–4 sentence body text. No headline, no title, no attribution prefix, no markdown, no preamble.
+
+OUTPUT FORMAT — the examples file shows fully rendered entries (bold headline + body + source), but you must output ONLY the body sentences:
+
+CORRECT output (this is all you should return):
+  "New data shows that most homeschooling families rely on a mix of curricula, digital tools, and supplemental programs. This hybrid approach points to a more modular education landscape and growing demand for flexible learning options."
+
+INCORRECT — do NOT output any of these:
+  "**Most Homeschoolers Also Use an Array of Resources, Data Shows:** New data shows..." (echoing headline)
+  "Most Homeschoolers Also Use an Array of Resources: New data shows..." (echoing headline)
+  "New data shows... (The 74)" (source citation — appended automatically)
+  "https://the74million.org — New data shows..." (URL in output)`;
 }
 
 async function generateSummary(article, pastedText = null) {
