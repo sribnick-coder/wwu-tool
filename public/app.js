@@ -446,6 +446,13 @@ function buildArticleCard(a) {
     ? `<span class="badge badge-published" title="Published in newsletter">${publishedEntry ? `Published Wk ${publishedEntry.week_date}` : 'Published'}</span>`
     : '';
 
+  const paywallNotice = a.is_paywalled ? `
+    <div class="paywall-notice">
+      <span class="paywall-notice-icon">🔒</span>
+      <span class="paywall-notice-text">Full article behind ${escHtml(a.source_name || 'publisher')} paywall. Open in your browser to read with your subscription, then edit the summary in the Draft view.</span>
+      <a href="${escHtml(a.url || '#')}" target="_blank" rel="noopener" class="paywall-open-btn">Open in Browser ↗</a>
+    </div>` : '';
+
   card.innerHTML = `
     <div class="card-top">
       ${(isRecommended || publishedBadge) ? `<div class="card-badges">${isRecommended ? '<span class="star-badge" title="Recommended">★</span>' : ''}${publishedBadge}</div>` : ''}
@@ -465,6 +472,7 @@ function buildArticleCard(a) {
     </div>
     ${a.preview ? `<div class="card-preview">${escHtml(a.preview)}</div>` : ''}
     ${tags ? `<div class="card-tags">${tags}</div>` : ''}
+    ${paywallNotice}
   `;
 
   card.querySelectorAll('.assign-btn').forEach(btn => {
