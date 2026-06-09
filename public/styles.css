@@ -307,7 +307,20 @@ html, body {
 
 .card-badges { display: flex; gap: 5px; flex-wrap: wrap; align-items: center; }
 
-.card-headline-row { display: flex; align-items: flex-start; gap: 8px; }
+.card-headline-row { display: flex; align-items: flex-start; gap: 6px; }
+.card-open-link {
+  flex-shrink: 0;
+  color: var(--text-muted);
+  text-decoration: none;
+  font-size: 14px;
+  opacity: 0.45;
+  padding: 0 2px;
+  line-height: 1.4;
+  transition: opacity 0.12s, color 0.12s;
+  margin-top: 1px;
+}
+.article-card:hover .card-open-link { opacity: 0.7; }
+.card-open-link:hover { opacity: 1 !important; color: var(--green-dark); }
 
 .card-checkbox {
   flex-shrink: 0;
@@ -411,10 +424,20 @@ html, body {
 .counter-item strong { color: var(--text); }
 .counter-sep { color: var(--border); font-size: 16px; }
 .counter-clear {
-  background: none; border: none; cursor: pointer;
-  color: var(--text-muted); font-size: 11px; padding: 0 2px; margin-left: 2px; line-height: 1;
+  font-size: 10.5px;
+  font-weight: 600;
+  font-family: var(--font);
+  padding: 1px 8px;
+  border-radius: 99px;
+  border: 1px solid var(--border);
+  background: var(--white);
+  color: var(--text-muted);
+  cursor: pointer;
+  margin-left: 4px;
+  line-height: 1.6;
+  transition: all 0.12s;
 }
-.counter-clear:hover { color: var(--text); }
+.counter-clear:hover { border-color: #fca5a5; color: #b91c1c; background: var(--red-light); }
 .counter-dot {
   width: 8px; height: 8px; border-radius: 50%; flex-shrink: 0;
 }
@@ -636,12 +659,9 @@ html, body {
 .draft-main-panel .panel-header {
   border-bottom-color: var(--green);
 }
-.draft-side-panel .side-section:first-child .panel-header {
-  border-bottom-color: #3b82f6;
-}
-.draft-side-panel .side-section:last-child .panel-header {
-  border-bottom-color: #8b5cf6;
-}
+.panel-header--blue   { border-bottom-color: #3b82f6; }
+.panel-header--purple { border-bottom-color: #8b5cf6; }
+.panel-header--red    { border-bottom-color: #ef4444; }
 
 .panel-title { font-size: 13px; font-weight: 700; }
 
@@ -1137,6 +1157,40 @@ html, body {
 .alt-result-meta { color: var(--text-muted); font-size: 12px; }
 .alt-result-desc { color: var(--text); }
 .alt-result-actions { display: flex; gap: 8px; margin-top: 4px; }
+
+/* ── Article detail modal ────────────────────────────────────────────────── */
+.modal-box--article { width: min(700px, 95vw); }
+.article-modal-badges { display: flex; gap: 5px; flex-wrap: wrap; min-height: 4px; }
+.article-modal-meta { font-size: 12.5px; color: var(--text-muted); margin-top: -4px; }
+.article-modal-tags { display: flex; gap: 4px; flex-wrap: wrap; }
+.article-modal-summary {
+  font-size: 14px;
+  line-height: 1.75;
+  color: var(--text);
+  background: var(--bg);
+  border-radius: var(--radius);
+  padding: 14px 16px;
+  max-height: 320px;
+  overflow-y: auto;
+}
+.article-modal-footer { display: flex; justify-content: flex-end; padding-top: 4px; }
+
+/* ── Decline action on draft cards ───────────────────────────────────────── */
+.btn-decline-entry {
+  font-size: 11.5px;
+  padding: 3px 10px;
+  border-radius: var(--radius);
+  border: 1px solid transparent;
+  background: none;
+  color: var(--text-muted);
+  cursor: pointer;
+  font-family: var(--font);
+  font-weight: 600;
+  white-space: nowrap;
+  flex-shrink: 0;
+  transition: all 0.12s;
+}
+.btn-decline-entry:hover { color: #b91c1c; border-color: #fca5a5; background: var(--red-light); }
 
 /* ── Utility ──────────────────────────────────────────────────────────────── */
 .hidden { display: none !important; }

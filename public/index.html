@@ -125,10 +125,10 @@
 
         <div class="draft-resize-handle" id="draft-h-resize"></div>
 
-        <!-- Right: Considered + Save for later stacked -->
+        <!-- Right: Considered + Save for later + Declined stacked -->
         <div class="draft-side-panel">
           <div class="side-section" id="side-considered">
-            <div class="panel-header">
+            <div class="panel-header panel-header--blue">
               <span class="panel-title">Considered</span>
               <span class="col-count" id="count-considered">0</span>
             </div>
@@ -136,21 +136,21 @@
           </div>
           <div class="side-resize-handle" id="draft-v-resize"></div>
           <div class="side-section" id="side-save-for-future">
-            <div class="panel-header">
+            <div class="panel-header panel-header--purple">
               <span class="panel-title">Save for later</span>
               <span class="col-count" id="count-save_for_future">0</span>
             </div>
             <div class="entry-list" id="list-save_for_future"></div>
           </div>
+          <div class="side-resize-handle" id="draft-v-resize-2"></div>
+          <div class="side-section" id="side-declined">
+            <div class="panel-header panel-header--red">
+              <span class="panel-title">Declined</span>
+              <span class="col-count" id="count-declined">0</span>
+            </div>
+            <div class="entry-list" id="list-declined"></div>
+          </div>
         </div>
-      </div>
-
-      <div id="draft-declined-drawer" class="declined-drawer hidden">
-        <button class="declined-handle" id="draft-declined-handle">
-          <span id="draft-declined-label">Declined (0)</span>
-          <span id="draft-declined-arrow" class="drawer-arrow">▲</span>
-        </button>
-        <div id="draft-declined-list" class="declined-list hidden"></div>
       </div>
 
       <!-- Decline zone — slides up from bottom when dragging -->
@@ -215,6 +215,23 @@
   </main>
 
   <!-- ── MODALS ──────────────────────────────────────────────────────────────── -->
+
+  <!-- Article detail modal -->
+  <div id="article-modal" class="modal hidden">
+    <div class="modal-backdrop" id="article-modal-backdrop"></div>
+    <div class="modal-box modal-box--article">
+      <button class="modal-close" id="article-modal-close">&times;</button>
+      <div class="article-modal-badges" id="article-modal-badges"></div>
+      <h3 class="modal-title" id="article-modal-title"></h3>
+      <div class="article-modal-meta" id="article-modal-meta"></div>
+      <div class="article-modal-tags" id="article-modal-tags"></div>
+      <div class="article-modal-summary" id="article-modal-summary"></div>
+      <div id="article-modal-paywall"></div>
+      <div class="article-modal-footer">
+        <a id="article-modal-link" href="#" target="_blank" rel="noopener" class="btn btn-primary">Open article ↗</a>
+      </div>
+    </div>
+  </div>
 
   <!-- Paywall modal -->
   <div id="paywall-modal" class="modal hidden">

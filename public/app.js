@@ -17,6 +17,7 @@ const state = {
   holdovers: [],           // active (non-dismissed) holdover pool items
   publishedIds: new Set(), // article_ids ever published in_this_week (for badge)
   recentPublished: [],     // last 4 weeks published entries (for tray)
+  declinedOrder: [],       // article IDs in manual-decline order, newest first
 };
 
 /* ── API helpers ──────────────────────────────────────────────────────── */
@@ -259,6 +260,8 @@ function setAssignment(articleId, section) {
   const card = document.querySelector(`.article-card[data-id="${articleId}"]`);
 
   if (section === 'declined' && newAssignment === 'declined') {
+    // Track manual decline order (newest first)
+    state.declinedOrder = [articleId, ...state.declinedOrder.filter(id => id !== articleId)];
     card?.remove();
     renderDeclinedDrawer();
   } else if (card) {
@@ -310,9 +313,9 @@ function updateCounterBar() {
   bar.style.display = total > 0 ? 'flex' : 'none';
 
   const pills = [];
-  if (nThis) pills.push(`<span class="counter-item"><span class="counter-dot dot-green"></span>This week: <strong>${nThis}</strong><button class="counter-clear" data-section="this_week" title="Clear all">✕</button></span>`);
-  if (nCons) pills.push(`<span class="counter-item"><span class="counter-dot dot-blue"></span>Considered: <strong>${nCons}</strong><button class="counter-clear" data-section="considered" title="Clear all">✕</button></span>`);
-  if (nSave) pills.push(`<span class="counter-item"><span class="counter-dot dot-purple"></span>Save for later: <strong>${nSave}</strong><button class="counter-clear" data-section="save_for_future" title="Clear all">✕</button></span>`);
+  if (nThis) pills.push(`<span class="counter-item"><span class="counter-dot dot-green"></span>This week: <strong>${nThis}</strong><button class="counter-clear" data-section="this_week">Clear</button></span>`);
+  if (nCons) pills.push(`<span class="counter-item"><span class="counter-dot dot-blue"></span>Considered: <strong>${nCons}</strong><button class="counter-clear" data-section="considered">Clear</button></span>`);
+  if (nSave) pills.push(`<span class="counter-item"><span class="counter-dot dot-purple"></span>Save for later: <strong>${nSave}</strong><button class="counter-clear" data-section="save_for_future">Clear</button></span>`);
   bar.innerHTML = pills.join('<span class="counter-sep">·</span>');
 
   bar.querySelectorAll('.counter-clear').forEach(btn => {
@@ -322,8 +325,28 @@ function updateCounterBar() {
 
 async function clearCategory(section) {
   for (const [id, sec] of Object.entries(state.assignments)) {
-    if (sec === section) delete state.assignments[id];
+    if (sec === section) {
+      // Published articles should return to auto-declined, not back to visible
+      if (state.publishedIds.has(id)) {
+        state.assignments[id] = 'declined';
+      } else {
+        delete state.assignments[id];
+      }
+    }
   }
+
+  // For holdover sections, also remove unoverridden holdovers from the UI this session
+  if (section === 'considered' || section === 'save_for_future') {
+    state.holdovers = state.holdovers.filter(h =>
+      h.section !== section || !!state.assignments[h.article_id]
+    );
+  }
+
+  // Remove cleared this_week entries from the draft state so Draft view reflects it
+  if (section === 'this_week') {
+    state.entries = state.entries.filter(e => e.section !== 'in_this_week');
+  }
+
   DEL(`/api/assignments/category/${section}`).catch(() => {});
   renderArticles();
   updateDraftToolbar();
@@ -456,7 +479,10 @@ function buildArticleCard(a) {
   card.innerHTML = `
     <div class="card-top">
       ${(isRecommended || publishedBadge) ? `<div class="card-badges">${isRecommended ? '<span class="star-badge" title="Recommended">★</span>' : ''}${publishedBadge}</div>` : ''}
-      <span class="card-headline">${escHtml(a.title)}</span>
+      <div class="card-headline-row">
+        <span class="card-headline">${escHtml(a.title)}</span>
+        ${a.url ? `<a href="${escHtml(a.url)}" target="_blank" rel="noopener" class="card-open-link" title="Open article">↗</a>` : ''}
+      </div>
     </div>
     <div class="assign-btns">
       <button class="assign-btn ${assignment === 'this_week' ? 'active-this-week' : ''}"     data-section="this_week">This week</button>
@@ -480,6 +506,12 @@ function buildArticleCard(a) {
       e.stopPropagation();
       setAssignment(a.id, btn.dataset.section);
     });
+  });
+
+  // Click card body to open article detail modal
+  card.addEventListener('click', (e) => {
+    if (e.target.closest('button') || e.target.closest('a')) return;
+    openArticleModal(a);
   });
 
   return card;
@@ -540,14 +572,85 @@ function dismissHoldoverFromScan(holdoverId, articleId, card) {
   if (dismissedDrawerOpen) loadAndRenderDismissedDrawer();
 }
 
+// ── Article detail modal ──────────────────────────────────────────────────
+
+function openArticleModal(a) {
+  const modal = document.getElementById('article-modal');
+
+  document.getElementById('article-modal-title').textContent = a.title;
+
+  const pubDate = a.published_at
+    ? new Date(a.published_at).toLocaleDateString('en-US', { month: 'short', day: 'numeric' })
+    : '';
+  const score = a.relevance_score != null ? `Score: ${(a.relevance_score * 100).toFixed(0)}` : '';
+  document.getElementById('article-modal-meta').textContent =
+    [a.source_name, pubDate, score].filter(Boolean).join(' · ');
+
+  const badges = [];
+  if (a.is_portfolio_flagged) badges.push('<span class="badge badge-portfolio">Portfolio</span>');
+  if (a.is_paywalled)         badges.push('<span class="badge badge-paywall">Paywall</span>');
+  if (state.publishedIds.has(a.id)) {
+    const p = state.recentPublished.find(x => x.article_id === a.id);
+    badges.push(`<span class="badge badge-published">${p ? `Published Wk ${p.week_date}` : 'Published'}</span>`);
+  }
+  document.getElementById('article-modal-badges').innerHTML = badges.join('');
+
+  const tags = (a.relevance_tags || []).map(t => `<span class="tag">${escHtml(t)}</span>`).join('');
+  document.getElementById('article-modal-tags').innerHTML = tags;
+
+  document.getElementById('article-modal-summary').textContent = a.preview || 'No summary available.';
+
+  const paywallEl = document.getElementById('article-modal-paywall');
+  if (a.is_paywalled && a.url) {
+    paywallEl.innerHTML = `
+      <div class="paywall-notice" style="margin-top:4px">
+        <span class="paywall-notice-icon">🔒</span>
+        <span class="paywall-notice-text">Full article behind ${escHtml(a.source_name || 'publisher')} paywall. Open in your browser to read with your subscription.</span>
+        <a href="${escHtml(a.url)}" target="_blank" rel="noopener" class="paywall-open-btn">Open in Browser ↗</a>
+      </div>`;
+  } else {
+    paywallEl.innerHTML = '';
+  }
+
+  const linkEl = document.getElementById('article-modal-link');
+  if (a.url) {
+    linkEl.href = a.url;
+    linkEl.style.display = '';
+  } else {
+    linkEl.style.display = 'none';
+  }
+
+  modal.classList.remove('hidden');
+}
+
+document.getElementById('article-modal-close').addEventListener('click', () => {
+  document.getElementById('article-modal').classList.add('hidden');
+});
+document.getElementById('article-modal-backdrop').addEventListener('click', () => {
+  document.getElementById('article-modal').classList.add('hidden');
+});
+
 // ── Declined rail section ─────────────────────────────────────────────────
 
 let drawerOpen = true;
 
 function renderDeclinedDrawer() {
-  const declined = state.articles.filter(a => state.assignments[a.id] === 'declined');
   const label = document.getElementById('declined-label');
   const list  = document.getElementById('declined-list');
+
+  const articleById = {};
+  state.articles.forEach(a => { articleById[a.id] = a; });
+
+  // Manually declined in reverse-chronological order, then auto-declined (published)
+  const manualDeclinedIds = new Set(state.declinedOrder.filter(id => state.assignments[id] === 'declined'));
+  const manuallyDeclined = state.declinedOrder
+    .filter(id => manualDeclinedIds.has(id))
+    .map(id => articleById[id])
+    .filter(Boolean);
+  const autoDeclined = state.articles.filter(a =>
+    state.assignments[a.id] === 'declined' && !manualDeclinedIds.has(a.id)
+  );
+  const declined = [...manuallyDeclined, ...autoDeclined];
 
   label.textContent = `Declined (${declined.length})`;
   list.innerHTML = '';
@@ -572,6 +675,7 @@ function renderDeclinedDrawer() {
       <button class="btn btn-secondary" style="font-size:11px;padding:3px 10px;margin-top:4px" data-restore="${a.id}">Restore</button>
     `;
     card.querySelector('[data-restore]').addEventListener('click', () => {
+      state.declinedOrder = state.declinedOrder.filter(id => id !== a.id);
       delete state.assignments[a.id];
       renderArticles();
       updateDraftToolbar();
@@ -820,6 +924,7 @@ function renderDraft() {
   renderSection('in_this_week');
   renderSection('considered');
   renderSection('save_for_future');
+  renderDraftDeclinedDrawer();
   updateColCounts();
   initSortables();
   initDraftResize();
@@ -870,6 +975,13 @@ function buildMainEntry(entry) {
   const isApproved = draftApproved.has(entry.id);
   if (isApproved) card.classList.add('approved');
 
+  const paywallNoticeHtml = entry.is_paywalled ? `
+    <div class="paywall-notice${isApproved ? ' hidden' : ''}">
+      <span class="paywall-notice-icon">🔒</span>
+      <span class="paywall-notice-text">Full article behind ${escHtml(entry.source_name || 'publisher')} paywall. Open in your browser to read, then edit the summary below.</span>
+      <a href="${escHtml(entry.article_url || '#')}" target="_blank" rel="noopener" class="paywall-open-btn">Open ↗</a>
+    </div>` : '';
+
   card.innerHTML = `
     <div class="entry-card-header">
       <div class="entry-card-header-left drag-zone">
@@ -884,6 +996,7 @@ function buildMainEntry(entry) {
       </div>
     </div>
     ${badgesHtml}
+    ${paywallNoticeHtml}
     <div class="${readClass}">${readContent}</div>
     <div class="rte-toolbar hidden">
       <button type="button" class="rte-btn" data-action="link">🔗 Add / remove link</button>
@@ -895,6 +1008,7 @@ function buildMainEntry(entry) {
         (${escHtml(entry.source_name || 'Source')}) ↗
       </a>
       <div class="entry-actions">
+        <button class="btn-decline-entry" data-action="decline">Decline</button>
         ${entry.is_paywalled ? `<button class="btn btn-ghost" data-action="paywall" data-id="${entry.id}">Paywall options</button>` : ''}
         <button class="btn-regen" data-action="regen" data-id="${entry.id}" title="Regenerate summary">↻</button>
       </div>
@@ -903,19 +1017,25 @@ function buildMainEntry(entry) {
 
   // Approve toggle
   card.querySelector('[data-action="approve"]').addEventListener('click', () => {
-    const approved = draftApproved.has(entry.id);
-    if (approved) {
+    const wasApproved = draftApproved.has(entry.id);
+    const approveBtn = card.querySelector('[data-action="approve"]');
+    const paywallNoticeEl = card.querySelector('.paywall-notice');
+    if (wasApproved) {
       draftApproved.delete(entry.id);
       card.classList.remove('approved');
-      card.querySelector('[data-action="approve"]').textContent = 'Approve';
-      card.querySelector('[data-action="approve"]').classList.remove('approved');
+      approveBtn.textContent = 'Approve';
+      approveBtn.classList.remove('approved');
+      if (paywallNoticeEl) paywallNoticeEl.classList.remove('hidden');
     } else {
       draftApproved.add(entry.id);
       card.classList.add('approved');
-      card.querySelector('[data-action="approve"]').textContent = '✓ Approved';
-      card.querySelector('[data-action="approve"]').classList.add('approved');
+      approveBtn.textContent = '✓ Approved';
+      approveBtn.classList.add('approved');
+      if (paywallNoticeEl) paywallNoticeEl.classList.add('hidden');
     }
   });
+
+  card.querySelector('[data-action="decline"]')?.addEventListener('click', () => declineEntry(entry.id));
 
   const editBtn    = card.querySelector('.btn-edit');
   const readEl     = card.querySelector('.entry-summary-read');
@@ -989,6 +1109,7 @@ function buildConsideredEntry(entry) {
       <div style="display:flex;gap:4px;align-items:center">
         ${badges}
         ${dismissBtn}
+        <button class="btn-decline-entry" data-action="decline">Decline</button>
       </div>
     </div>
   `;
@@ -1007,6 +1128,7 @@ function buildConsideredEntry(entry) {
   }
 
   card.querySelector('[data-action="regen"]')?.addEventListener('click', () => regenerateEntry(entry.id));
+  card.querySelector('[data-action="decline"]')?.addEventListener('click', () => declineEntry(entry.id));
 
   if (holdover && weeksHeld >= 4) {
     card.querySelector('[data-action="dismiss"]')?.addEventListener('click', () => {
@@ -1036,6 +1158,7 @@ function buildSaveEntry(entry) {
     ${holdover && weeksHeld >= 4
       ? `<button class="btn-dismiss-entry" data-action="dismiss" title="Held ${weeksHeld} weeks — dismiss">×</button>`
       : ''}
+    <button class="btn-decline-entry" data-action="decline" title="Decline">✕</button>
   `;
 
   if (holdover && weeksHeld >= 4) {
@@ -1044,6 +1167,11 @@ function buildSaveEntry(entry) {
       dismissFromDraft(entry.id, holdover.id);
     });
   }
+
+  card.querySelector('[data-action="decline"]')?.addEventListener('click', e => {
+    e.stopPropagation();
+    declineEntry(entry.id);
+  });
 
   return card;
 }
@@ -1140,6 +1268,9 @@ function updateColCounts() {
     document.getElementById(`count-${s}`).textContent = n;
   }
 
+  const declinedCountEl = document.getElementById('count-declined');
+  if (declinedCountEl) declinedCountEl.textContent = draftDeclined.size;
+
   const n = state.entries.filter(e => e.section === 'in_this_week' && !draftDeclined.has(e.id)).length;
   const warn = document.getElementById('warn-in_this_week');
   if (n < 5 && n > 0) {
@@ -1155,39 +1286,29 @@ function updateColCounts() {
 
 function renderDraftDeclinedDrawer() {
   const declined = state.entries.filter(e => draftDeclined.has(e.id));
-  const drawer = document.getElementById('draft-declined-drawer');
-  const label  = document.getElementById('draft-declined-label');
-  const list   = document.getElementById('draft-declined-list');
+  const list = document.getElementById('list-declined');
+  const countEl = document.getElementById('count-declined');
 
-  if (!declined.length) {
-    drawer.classList.add('hidden');
-    return;
-  }
-
-  drawer.classList.remove('hidden');
-  label.textContent = `Declined (${declined.length})`;
+  if (countEl) countEl.textContent = declined.length;
+  if (!list) return;
 
   list.innerHTML = '';
   for (const entry of declined) {
     const card = document.createElement('div');
-    card.className = 'declined-card';
+    card.className = 'entry-card entry-card--save';
+    card.dataset.id = entry.id;
+    card.style.opacity = '0.75';
     card.innerHTML = `
-      <div class="declined-card-title">${escHtml(entry.headline)}</div>
-      <div class="declined-card-meta">${escHtml(entry.source_name || '')}</div>
-      <button class="btn btn-secondary" style="font-size:11px;padding:3px 10px;margin-top:4px" data-restore="${entry.id}">Restore</button>
+      <div class="entry-save-text" style="flex:1;min-width:0">
+        <div class="entry-save-title">${escHtml(entry.headline)}</div>
+        <div class="entry-save-meta">${escHtml(entry.source_name || '')}</div>
+      </div>
+      <button class="btn btn-secondary" style="font-size:11px;padding:3px 10px;flex-shrink:0" data-restore="${entry.id}">Restore</button>
     `;
     card.querySelector('[data-restore]').addEventListener('click', () => restoreEntry(entry.id));
     list.appendChild(card);
   }
 }
-
-let draftDrawerOpen = false;
-
-document.getElementById('draft-declined-handle').addEventListener('click', () => {
-  draftDrawerOpen = !draftDrawerOpen;
-  document.getElementById('draft-declined-list').classList.toggle('hidden', !draftDrawerOpen);
-  document.getElementById('draft-declined-arrow').classList.toggle('open', draftDrawerOpen);
-});
 
 document.getElementById('btn-back-to-scan').addEventListener('click', () => showView('scan'));
 document.getElementById('btn-back-to-draft').addEventListener('click', () => showView('draft'));
@@ -1315,6 +1436,12 @@ function initDraftResize() {
     document.getElementById('side-save-for-future'),
     'y'
   );
+  initPanelResize(
+    document.getElementById('draft-v-resize-2'),
+    document.getElementById('side-save-for-future'),
+    document.getElementById('side-declined'),
+    'y'
+  );
 }
 
 function initSortables() {
@@ -1393,15 +1520,27 @@ document.getElementById('btn-summarize-all').addEventListener('click', async () 
   btn.disabled = true;
   btn.textContent = 'Regenerating…';
 
+  // Spin all individual regen buttons to indicate work in progress
+  document.querySelectorAll('.btn-regen').forEach(b => {
+    b.disabled = true;
+    b.classList.add('spinning');
+  });
+
   try {
     await POST(`/api/draft/${state.currentDraftDate}/summarize`, {});
     const fresh = await GET(`/api/draft/${state.currentDraftDate}`);
     state.entries = fresh.entries || [];
+    // renderSection replaces DOM, removing old spinning buttons
     renderSection('in_this_week');
     renderSection('considered');
     renderSection('save_for_future');
   } catch (err) {
     alert(`Summary generation failed: ${err.message}`);
+    // Render didn't happen, so manually stop spinning on existing buttons
+    document.querySelectorAll('.btn-regen').forEach(b => {
+      b.disabled = false;
+      b.classList.remove('spinning');
+    });
   } finally {
     btn.disabled = false;
     btn.textContent = '↻ Regenerate all';
@@ -1431,8 +1570,8 @@ function closePaywallModal() {
   paywallEntryId = null;
 }
 
-document.querySelector('.modal-close').addEventListener('click', closePaywallModal);
-document.querySelector('.modal-backdrop').addEventListener('click', closePaywallModal);
+document.getElementById('paywall-modal').querySelector('.modal-close').addEventListener('click', closePaywallModal);
+document.getElementById('paywall-modal').querySelector('.modal-backdrop').addEventListener('click', closePaywallModal);
 
 // Option 1: paste text
 document.getElementById('btn-paywall-paste').addEventListener('click', async () => {
