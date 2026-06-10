@@ -919,8 +919,16 @@ async function addManualUrl() {
 // ── Draft & organize ──────────────────────────────────────────────────────
 
 document.getElementById('btn-draft').addEventListener('click', async () => {
+  // Only draft assignments for articles actually present in the current scan
+  // (or active holdovers) — same visibility filter the counter bar uses. Without
+  // this, stale IDs accumulated in state.assignments (e.g. from prior drafts via
+  // syncAssignmentsFromEntries) leak into the draft, so Scan and Draft disagree.
+  const visibleIds = new Set([
+    ...state.articles.map(a => a.id),
+    ...state.holdovers.map(h => h.article_id),
+  ]);
   const explicitAssignments = Object.entries(state.assignments)
-    .filter(([, section]) => section !== 'declined')
+    .filter(([articleId, section]) => section !== 'declined' && visibleIds.has(articleId))
     .map(([articleId, section]) => ({
       articleId,
       section: section === 'this_week' ? 'in_this_week' : section,
