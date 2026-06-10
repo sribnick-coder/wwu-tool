@@ -303,12 +303,16 @@ app.post('/api/scan', async (req, res) => {
       job.status = 'ranking';
     }
     try {
-      await rankArticles(scanId);
+      const rankTimeout = new Promise((_, reject) =>
+        setTimeout(() => reject(new Error('Ranking timed out after 120s')), 120_000)
+      );
+      await Promise.race([rankArticles(scanId), rankTimeout]);
       const jobDone = scanJobs.get(scanId);
       if (jobDone) jobDone.status = 'done';
     } catch (err) {
       console.error('[rank error]', err.message, err.status || '', err.error || '');
       const jobDone = scanJobs.get(scanId);
+      // Always mark done — articles are in DB even without scores; UI can still show them
       if (jobDone) { jobDone.status = 'done'; jobDone.rankError = err.message; }
     }
   }).catch((err) => {
@@ -323,6 +327,15 @@ app.get('/api/scan/:scanId', (req, res) => {
   const job = scanJobs.get(req.params.scanId);
   if (!job) return res.status(404).json({ error: 'Scan not found' });
   res.json(job);
+});
+
+// Allow the UI to abandon a stuck ranking and load results as-is
+app.post('/api/scan/:scanId/skip-ranking', (req, res) => {
+  const job = scanJobs.get(req.params.scanId);
+  if (!job) return res.status(404).json({ error: 'Scan not found' });
+  job.status = 'done';
+  job.rankError = 'Skipped by user';
+  res.json({ ok: true, batch: job.batch });
 });
 
 // ── Articles ──────────────────────────────────────────────────────────────────

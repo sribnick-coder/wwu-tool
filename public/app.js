@@ -188,17 +188,40 @@ async function startScan() {
 }
 
 function pollScan(scanId) {
+  let rankingStartedAt = null;
+  let skipShown = false;
+
   scanPollTimer = setInterval(async () => {
     try {
       const job = await GET(`/api/scan/${scanId}`);
       const pct = job.total > 0 ? Math.round((job.completed / job.total) * 100) : 0;
 
       if (job.status === 'running') {
+        rankingStartedAt = null;
+        skipShown = false;
         showProgress(pct, `${job.completed}/${job.total}`, `Scanning ${job.source || ''}…`);
         setStatus(`Scanning sources… ${job.completed}/${job.total}`);
       } else if (job.status === 'ranking') {
-        showProgress(95, '', 'Ranking with Claude…');
-        setStatus('Ranking articles with Claude…');
+        if (!rankingStartedAt) rankingStartedAt = Date.now();
+        const rankingSecs = Math.round((Date.now() - rankingStartedAt) / 1000);
+        showProgress(95, '', `Ranking with Claude… (${rankingSecs}s)`);
+        setStatus(`Ranking articles with Claude… ${rankingSecs}s`);
+
+        // After 90s offer an escape hatch
+        if (rankingSecs >= 90 && !skipShown) {
+          skipShown = true;
+          const statusEl = document.getElementById('scan-status');
+          if (statusEl) {
+            statusEl.innerHTML =
+              'Ranking is taking longer than usual. ' +
+              `<button class="btn btn-secondary" id="btn-skip-ranking" style="margin-left:8px;padding:2px 10px;font-size:12px;">Use results as-is →</button>`;
+            document.getElementById('btn-skip-ranking')?.addEventListener('click', async () => {
+              try {
+                await POST(`/api/scan/${scanId}/skip-ranking`, {});
+              } catch {}
+            });
+          }
+        }
       } else if (job.status === 'done' || job.status === 'error') {
         clearInterval(scanPollTimer);
         hideProgress();
@@ -206,7 +229,8 @@ function pollScan(scanId) {
         btn.disabled = false;
         btn.textContent = 'Refresh scan';
         lastScanErrors = job.errors || [];
-        setStatus(lastScanErrors.length ? `Scan complete. ${lastScanErrors.length} source(s) failed.` : 'Scan complete.');
+        const note = job.rankError ? ` (ranking skipped: ${job.rankError})` : '';
+        setStatus(lastScanErrors.length ? `Scan complete. ${lastScanErrors.length} source(s) failed.${note}` : `Scan complete.${note}`);
         renderScanErrors();
         await loadLatestArticles(job.batch);
       }

@@ -38,18 +38,23 @@ async function rankArticles(scanBatch) {
     index: i,
     title: a.title,
     source: a.source_name,
-    preview: a.preview?.slice(0, 300) || '',
+    preview: a.preview?.slice(0, 200) || '',   // trimmed to keep prompt manageable
     published_at: a.published_at,
     url: a.url,
   }));
 
-  const prompt = `You are ranking articles for the A-Street Weekly Wrap-Up newsletter, a curated digest of PreK-12 education news for education investors, operators, and sector leaders.
+  // Rank in batches of 40 to keep prompts a manageable size
+  const BATCH_SIZE = 40;
+  const RANKING_TIMEOUT_MS = 90_000;
+
+  async function rankBatch(batch) {
+    const prompt = `You are ranking articles for the A-Street Weekly Wrap-Up newsletter, a curated digest of PreK-12 education news for education investors, operators, and sector leaders.
 
 RANKING PREFERENCES:
 ${JSON.stringify(prefs, null, 2)}
 
-ARTICLES TO RANK (${articleList.length} total):
-${articleList.map(a => `[${a.index}] "${a.title}" — ${a.source}\n  Preview: ${a.preview}`).join('\n\n')}
+ARTICLES TO RANK (${batch.length} total):
+${batch.map(a => `[${a.index}] "${a.title}" — ${a.source}\n  Preview: ${a.preview}`).join('\n\n')}
 
 Score each article 0.0–1.0 based on:
 1. Topic match with topic_priorities (highest weight)
@@ -69,23 +74,37 @@ Return ONLY valid JSON array, no markdown, no explanation:
   ...
 ]
 
-Return scores for ALL ${articleList.length} articles.`;
+Return scores for ALL ${batch.length} articles.`;
 
-  const response = await client.messages.create({
-    model: 'claude-sonnet-4-6',
-    max_tokens: 4096,
-    messages: [{ role: 'user', content: prompt }],
-  });
+    const timeout = new Promise((_, reject) =>
+      setTimeout(() => reject(new Error(`Ranking timeout after ${RANKING_TIMEOUT_MS / 1000}s`)), RANKING_TIMEOUT_MS)
+    );
 
-  let scores;
-  try {
+    const response = await Promise.race([
+      client.messages.create({
+        model: 'claude-sonnet-4-6',
+        max_tokens: 8192,
+        messages: [{ role: 'user', content: prompt }],
+      }),
+      timeout,
+    ]);
+
     const text = response.content[0].text.trim();
     const jsonStr = text.startsWith('[') ? text : text.slice(text.indexOf('['));
-    scores = JSON.parse(jsonStr.slice(0, jsonStr.lastIndexOf(']') + 1));
-  } catch (e) {
-    console.error('Failed to parse ranking response:', e.message);
-    // Fall back: assign uniform scores
-    scores = articleList.map((a, i) => ({ index: i, score: 0.5, relevance_tags: [], is_portfolio_flagged: false }));
+    return JSON.parse(jsonStr.slice(0, jsonStr.lastIndexOf(']') + 1));
+  }
+
+  // Process in batches; fall back to uniform scores if any batch fails
+  let scores = [];
+  for (let i = 0; i < articleList.length; i += BATCH_SIZE) {
+    const batch = articleList.slice(i, i + BATCH_SIZE);
+    try {
+      const batchScores = await rankBatch(batch);
+      scores.push(...batchScores);
+    } catch (e) {
+      console.error(`[ranker] Batch ${i}–${i + batch.length} failed: ${e.message} — using fallback scores`);
+      scores.push(...batch.map(a => ({ index: a.index, score: 0.5, relevance_tags: [], is_portfolio_flagged: false })));
+    }
   }
 
   // Apply scores and update DB
