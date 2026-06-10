@@ -1006,12 +1006,14 @@ app.post('/api/draft/:weekDate/mark-sent', async (req, res) => {
 app.post('/api/presence', async (req, res) => {
   const { view = 'app' } = req.body;
   const now = new Date().toISOString();
-  await supabase.from('presence').upsert({
-    user_email: req.user.email,
-    user_name: req.user.name,
-    current_view: view,
-    last_seen: now,
-  }, { onConflict: 'user_email' }).catch(() => {});
+  try {
+    await supabase.from('presence').upsert({
+      user_email: req.user.email,
+      user_name: req.user.name,
+      current_view: view,
+      last_seen: now,
+    }, { onConflict: 'user_email' });
+  } catch {}
 
   const cutoff = new Date(Date.now() - 5 * 60 * 1000).toISOString();
   const { data } = await supabase.from('presence').select('*').gte('last_seen', cutoff);
