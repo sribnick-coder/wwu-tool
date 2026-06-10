@@ -548,6 +548,18 @@ app.post('/api/draft', async (req, res) => {
 
   const existingByArticleId = Object.fromEntries((existing || []).map(e => [e.article_id, e.id]));
 
+  // Reconcile: delete entries whose article is no longer in the submitted set so the
+  // draft mirrors current curation instead of accumulating across every "Draft & organize".
+  // Manual entries (no article_id) are preserved.
+  const submittedIds = new Set(allIds);
+  const staleEntryIds = (existing || [])
+    .filter(e => e.article_id && !submittedIds.has(e.article_id))
+    .map(e => e.id);
+  if (staleEntryIds.length) {
+    await supabase.from('draft_entries').delete().in('id', staleEntryIds);
+  }
+  const keptCount = (existing || []).length - staleEntryIds.length;
+
   // Update section for existing entries whose assignment changed
   const updatePromises = Object.entries(sectionMap)
     .filter(([articleId]) => existingByArticleId[articleId] !== undefined)
@@ -566,7 +578,7 @@ app.post('/api/draft', async (req, res) => {
       draft_id: draft.id,
       article_id: a.id,
       section: sectionMap[a.id] || 'in_this_week',
-      position: (existing?.length || 0) + i,
+      position: keptCount + i,
       headline: a.title,
       source_name: a.source_name,
       article_url: a.url,
