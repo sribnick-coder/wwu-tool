@@ -263,12 +263,24 @@ app.post('/api/articles/manual', async (req, res) => {
     const { load } = require('cheerio');
     const $ = load(html);
 
-    const title = $('title').text().trim()
-      || $('h1').first().text().trim()
-      || url;
-    const description = $('meta[name="description"]').attr('content')
-      || $('meta[property="og:description"]').attr('content')
-      || '';
+    // og:title is usually the clean article headline; <title> often includes site name suffix
+    const ogTitle = ($('meta[property="og:title"]').attr('content') || '').trim();
+    const articleH1 = $('article h1, .post h1, [class*="article"] h1, main h1').first().text().trim();
+    const firstH1 = $('h1').first().text().trim();
+    const pageTitle = $('title').text().trim();
+    const title = ogTitle || articleH1 || firstH1 || pageTitle || url;
+
+    // Prefer actual article paragraph text over meta description
+    const articleParas = [];
+    $('article p, .post p, [class*="article"] p, main p').each((_, el) => {
+      const text = $(el).text().trim();
+      if (text.length > 50) articleParas.push(text);
+    });
+    const articleContent = articleParas.slice(0, 3).join(' ').slice(0, 400);
+    const ogDesc = ($('meta[property="og:description"]').attr('content') || '').trim();
+    const metaDesc = ($('meta[name="description"]').attr('content') || '').trim();
+    const description = articleContent || ogDesc || metaDesc;
+
     const sourceName = new URL(url).hostname.replace('www.', '');
 
     const { data, error } = await supabase.from('articles').upsert({
