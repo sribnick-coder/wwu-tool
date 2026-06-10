@@ -106,3 +106,40 @@ CREATE TABLE IF NOT EXISTS scan_assignments (
 
 -- Track when a newsletter was sent (used by "Mark as sent" to clear this_week)
 ALTER TABLE drafts ADD COLUMN IF NOT EXISTS sent_at TIMESTAMPTZ;
+
+-- ── MIGRATION: Google identity + production hardening ────────────────────────
+
+-- Active user presence (soft lock + "who's editing" display)
+CREATE TABLE IF NOT EXISTS presence (
+  user_email TEXT PRIMARY KEY,
+  user_name  TEXT,
+  current_view TEXT DEFAULT 'app',
+  last_seen  TIMESTAMPTZ DEFAULT NOW()
+);
+
+-- Append-only assignment audit log (every section change recorded)
+CREATE TABLE IF NOT EXISTS assignment_audit (
+  id          UUID PRIMARY KEY DEFAULT gen_random_uuid(),
+  url         TEXT NOT NULL,
+  title       TEXT,
+  old_section TEXT,
+  new_section TEXT,
+  user_email  TEXT,
+  user_name   TEXT,
+  changed_at  TIMESTAMPTZ DEFAULT NOW()
+);
+
+CREATE INDEX IF NOT EXISTS idx_audit_changed_at ON assignment_audit(changed_at DESC);
+CREATE INDEX IF NOT EXISTS idx_audit_url        ON assignment_audit(url);
+
+-- Restorable snapshots of the full scan_assignments state
+CREATE TABLE IF NOT EXISTS snapshots (
+  id            UUID PRIMARY KEY DEFAULT gen_random_uuid(),
+  label         TEXT NOT NULL,
+  article_count INTEGER DEFAULT 0,
+  assignments   JSONB NOT NULL,
+  created_by    TEXT,
+  created_at    TIMESTAMPTZ DEFAULT NOW()
+);
+
+CREATE INDEX IF NOT EXISTS idx_snapshots_created_at ON snapshots(created_at DESC);

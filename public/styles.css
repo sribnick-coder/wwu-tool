@@ -1282,3 +1282,64 @@ html, body {
 .modal-box--narrow { max-width: 400px; }
 .modal-body { font-size: 13px; line-height: 1.6; color: var(--text); margin: 10px 0 0; }
 .modal-actions { display: flex; gap: 8px; margin-top: 20px; }
+
+/* ── Login overlay ───────────────────────────────────────────────────────── */
+.login-overlay {
+  position: fixed; inset: 0; z-index: 9999;
+  background: var(--bg);
+  display: flex; align-items: center; justify-content: center;
+}
+.login-overlay.hidden { display: none; }
+.login-card {
+  background: var(--white);
+  border: 1px solid var(--border);
+  border-radius: 12px;
+  box-shadow: var(--shadow-md);
+  padding: 48px 40px;
+  width: 360px;
+  text-align: center;
+}
+.login-logo {
+  font-size: 20px; font-weight: 700; color: var(--green);
+  margin-bottom: 24px;
+}
+.login-logo .logo-mark { font-weight: 900; }
+.login-title { font-size: 18px; font-weight: 700; margin-bottom: 8px; }
+.login-subtitle { font-size: 13px; color: var(--text-muted); margin-bottom: 28px; line-height: 1.5; }
+.btn-login {
+  display: inline-flex; align-items: center; gap: 10px;
+  width: 100%; justify-content: center;
+  padding: 11px 20px; font-size: 14px;
+}
+.google-icon { width: 18px; height: 18px; flex-shrink: 0; }
+
+/* ── User indicator (header) ─────────────────────────────────────────────── */
+.user-indicator {
+  display: flex; align-items: center; gap: 10px;
+  font-size: 12px; color: var(--text-muted);
+}
+.user-name { font-weight: 600; color: var(--text); }
+.signout-link { color: var(--text-muted); text-decoration: none; }
+.signout-link:hover { color: var(--text); text-decoration: underline; }
+
+/* ── Presence banner ─────────────────────────────────────────────────────── */
+.presence-banner {
+  background: var(--yellow); border-bottom: 1px solid var(--yellow-border);
+  color: #92400e; font-size: 12px; padding: 6px 16px; text-align: center;
+}
+.presence-banner.hidden { display: none; }
+
+/* ── Toast notifications ─────────────────────────────────────────────────── */
+.toast {
+  position: fixed; bottom: 20px; right: 20px; z-index: 10000;
+  background: #1f2937; color: #fff;
+  padding: 10px 16px; border-radius: var(--radius);
+  font-size: 13px; max-width: 340px;
+  box-shadow: var(--shadow-md);
+  opacity: 0; transform: translateY(8px);
+  transition: opacity 0.2s, transform 0.2s;
+  pointer-events: none;
+}
+.toast.toast-visible { opacity: 1; transform: translateY(0); }
+.toast.toast-error { background: #dc2626; }
+.toast.toast-success { background: var(--green); }

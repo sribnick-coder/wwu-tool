@@ -13,12 +13,80 @@ const state = {
   entries: [],
 
   oauthConnected: false,
+  currentUser: null,       // { email, name } from Google sign-in
 
   holdovers: [],           // active (non-dismissed) holdover pool items
   publishedIds: new Set(), // article_ids ever published in_this_week (for badge)
   recentPublished: [],     // last 4 weeks published entries (for tray)
   declinedOrder: [],       // article IDs in manual-decline order, newest first
 };
+
+/* ── Toast notifications ──────────────────────────────────────────────────── */
+
+function showToast(message, type = 'error') {
+  const toast = document.createElement('div');
+  toast.className = `toast toast-${type}`;
+  toast.textContent = message;
+  document.body.appendChild(toast);
+  requestAnimationFrame(() => toast.classList.add('toast-visible'));
+  setTimeout(() => {
+    toast.classList.remove('toast-visible');
+    setTimeout(() => toast.remove(), 300);
+  }, 4500);
+}
+
+/* ── Auth status ──────────────────────────────────────────────────────────── */
+
+async function checkAuthStatus() {
+  try {
+    const { authenticated, user } = await GET('/auth/status');
+    if (!authenticated) {
+      document.getElementById('login-overlay').classList.remove('hidden');
+      return false;
+    }
+    state.currentUser = user;
+    document.getElementById('login-overlay').classList.add('hidden');
+    const indicator = document.getElementById('user-indicator');
+    if (indicator && user) {
+      indicator.innerHTML =
+        `<span class="user-name">${escHtml(user.name)}</span>` +
+        `<a href="#" id="btn-signout" class="signout-link">Sign out</a>`;
+      document.getElementById('btn-signout')?.addEventListener('click', async (e) => {
+        e.preventDefault();
+        await fetch('/auth/logout', { method: 'POST' });
+        location.reload();
+      });
+    }
+    return true;
+  } catch {
+    // If check fails entirely (e.g., DISABLE_AUTH=true), proceed normally
+    return true;
+  }
+}
+
+/* ── Presence heartbeat ───────────────────────────────────────────────────── */
+
+function startPresenceHeartbeat() {
+  async function beat() {
+    try {
+      const active = await POST('/api/presence', { view: 'app' });
+      const others = (active || []).filter(u => u.user_email !== state.currentUser?.email);
+      const banner = document.getElementById('presence-banner');
+      if (!banner) return;
+      if (others.length > 0) {
+        const names = others.map(u => u.user_name || u.user_email).join(', ');
+        const ageMs = Date.now() - new Date(others[0].last_seen).getTime();
+        const ageTxt = ageMs < 60000 ? 'just now' : `${Math.round(ageMs / 60000)} min ago`;
+        banner.textContent = `${names} is also active — last seen ${ageTxt}. Be careful editing at the same time.`;
+        banner.classList.remove('hidden');
+      } else {
+        banner.classList.add('hidden');
+      }
+    } catch {}
+  }
+  beat();
+  return setInterval(beat, 30000);
+}
 
 /* ── API helpers ──────────────────────────────────────────────────────── */
 
@@ -188,12 +256,12 @@ async function loadLatestArticles(batch) {
     state.publishedIds = new Set(publishedData.allIds || []);
     state.recentPublished = publishedData.recent || [];
 
-    // Auto-decline published articles (only if not already explicitly assigned)
+    // Start fresh for the new batch, then auto-decline previously-published articles
+    state.assignments = {};
     for (const id of state.publishedIds) {
-      if (state.assignments[id] === undefined) state.assignments[id] = 'declined';
+      state.assignments[id] = 'declined';
     }
 
-    state.assignments = {};
     await loadAndMergeAssignments();
     renderPublishedDrawer();
   } catch (err) {
@@ -241,7 +309,8 @@ function setAssignment(articleId, section) {
   if (state.assignments[articleId] === section) {
     delete state.assignments[articleId];
     if (article?.url && section !== 'declined') {
-      DEL(`/api/assignments?url=${encodeURIComponent(article.url)}`).catch(() => {});
+      DEL(`/api/assignments?url=${encodeURIComponent(article.url)}`)
+        .catch(() => showToast('⚠ Could not remove assignment — reload to resync', 'error'));
     }
   } else {
     state.assignments[articleId] = section;
@@ -252,7 +321,7 @@ function setAssignment(articleId, section) {
         title: article.title,
         source_name: article.source_name,
         article_id: article.id,
-      }).catch(() => {});
+      }).catch(() => showToast('⚠ Assignment save failed — reload to resync', 'error'));
     }
   }
 
@@ -801,6 +870,16 @@ async function addManualUrl() {
       state.articles.unshift(article);
     }
     state.assignments[article.id] = 'this_week';
+    // Persist the assignment — manual adds bypassed setAssignment so we save explicitly
+    if (article.id && article.url) {
+      POST('/api/assignments', {
+        url: article.url,
+        section: 'this_week',
+        title: article.title,
+        source_name: article.source_name,
+        article_id: article.id,
+      }).catch(() => showToast('⚠ Assignment save failed — reload to resync', 'error'));
+    }
     renderArticles();
     updateDraftToolbar();
     updateCounterBar();
@@ -1853,8 +1932,13 @@ function insertLinkInEditor(editorEl) {
 /* ── Init ────────────────────────────────────────────────────────────── */
 
 (async function init() {
+  // Auth check must come first — stops init if user is not signed in
+  const authOk = await checkAuthStatus();
+  if (!authOk) return;
+
   await checkOAuthStatus();
   initRailResize();
+  startPresenceHeartbeat();
 
   // Respect URL hash on load; default to scan
   const hashView = window.location.hash.replace('#', '');
@@ -1873,6 +1957,7 @@ function insertLinkInEditor(editorEl) {
     if (scanData.articles?.length) {
       state.articles = scanData.articles;
       state.scanBatch = scanData.batch;
+      // Assignments cleared + published auto-declined inside loadAndMergeAssignments flow
       for (const id of state.publishedIds) {
         if (state.assignments[id] === undefined) state.assignments[id] = 'declined';
       }
