@@ -33,9 +33,22 @@ function labelRow(url)  { return url ? (state.labels[url] || null) : null; }
 function activeRows()   { return Object.values(state.labels).filter(r => !r.dismissed_at); }
 function rowsWithLabel(label) { return activeRows().filter(r => r.label === label); }
 
+// In-flight write promises. Reads (loadLabels) await these first so a reload can
+// never race ahead of a fire-and-forget write and resurrect stale state.
+const pendingWrites = [];
+function track(p) {
+  pendingWrites.push(p);
+  p.catch(() => {}).finally(() => {
+    const i = pendingWrites.indexOf(p);
+    if (i >= 0) pendingWrites.splice(i, 1);
+  });
+  return p;
+}
+
 // Load the entire label set from the server into state.labels (the mirror).
 async function loadLabels() {
   try {
+    if (pendingWrites.length) await Promise.allSettled([...pendingWrites]);
     const rows = await GET('/api/labels');
     state.labels = {};
     for (const r of rows || []) state.labels[r.url] = r;
@@ -59,22 +72,22 @@ function setLabel(article, label) {
     dismissed_at: null,
     first_saved_at: prev.first_saved_at || new Date().toISOString(),
   };
-  POST('/api/labels', {
+  track(POST('/api/labels', {
     url, label,
     title: state.labels[url].title,
     source_name: state.labels[url].source_name,
     article_id: state.labels[url].article_id,
     is_paywalled: state.labels[url].is_paywalled,
     is_portfolio_flagged: state.labels[url].is_portfolio_flagged,
-  }).catch(() => showToast('⚠ Save failed — reload to resync', 'error'));
+  }).catch(() => showToast('⚠ Save failed — reload to resync', 'error')));
 }
 
 // Write-through: remove a label entirely (un-toggling on the scan screen).
 function removeLabel(url) {
   if (!url) return;
   delete state.labels[url];
-  DEL(`/api/labels?url=${encodeURIComponent(url)}`)
-    .catch(() => showToast('⚠ Could not remove — reload to resync', 'error'));
+  track(DEL(`/api/labels?url=${encodeURIComponent(url)}`)
+    .catch(() => showToast('⚠ Could not remove — reload to resync', 'error')));
 }
 
 // Write-through: patch fields on an existing label row (summary, label, position…).
@@ -82,8 +95,8 @@ function patchLabel(url, fields) {
   if (!url) return;
   const prev = state.labels[url];
   if (prev) state.labels[url] = { ...prev, ...fields };
-  PATCH('/api/labels', { url, ...fields })
-    .catch(() => showToast('⚠ Save failed — reload to resync', 'error'));
+  track(PATCH('/api/labels', { url, ...fields })
+    .catch(() => showToast('⚠ Save failed — reload to resync', 'error')));
 }
 
 // Adapt a label row into the entry shape the draft card builders expect.
@@ -104,9 +117,14 @@ function rowToEntry(r) {
   };
 }
 
-// Robust card lookup by url (urls contain CSS-significant chars).
-function cardByUrl(url) {
-  return [...document.querySelectorAll('[data-url]')].find(el => el.dataset.url === url) || null;
+// Robust card lookups by url (urls contain CSS-significant chars). Scoped by card
+// type because the same url exists as both a Scan card and a Draft entry card —
+// the hidden view still has DOM, so an unscoped query would hit the wrong one.
+function cardByUrl(url) {        // Scan view: .article-card / holdover cards
+  return [...document.querySelectorAll('.article-card[data-url]')].find(el => el.dataset.url === url) || null;
+}
+function entryCardByUrl(url) {   // Draft view: .entry-card
+  return [...document.querySelectorAll('.entry-card[data-url]')].find(el => el.dataset.url === url) || null;
 }
 
 /* ── Toast notifications ──────────────────────────────────────────────────── */
@@ -1001,6 +1019,7 @@ function buildMainEntry(entry) {
   const card = document.createElement('div');
   card.className = 'entry-card entry-card--main';
   card.dataset.id = entry.id;
+  card.dataset.url = entry.url;
 
   const portfolioBadge = entry.is_portfolio_flagged
     ? '<span class="badge badge-portfolio">&#9830; Portfolio</span>' : '';
@@ -1118,6 +1137,7 @@ function buildConsideredEntry(entry) {
   const card = document.createElement('div');
   card.className = 'entry-card entry-card--considered';
   card.dataset.id = entry.id;
+  card.dataset.url = entry.url;
 
   const summaryContent = entry.summary
     ? `<div class="entry-summary-editor entry-summary-considered" data-id="${entry.id}" contenteditable="true">${renderSummaryHtml(entry.summary)}</div>`
@@ -1182,6 +1202,7 @@ function buildSaveEntry(entry) {
   const card = document.createElement('div');
   card.className = 'entry-card entry-card--save';
   card.dataset.id = entry.id;
+  card.dataset.url = entry.url;
 
   const row = labelRow(entry.url);
   const weeksHeld = row?.first_saved_at
@@ -1217,9 +1238,9 @@ function buildSaveEntry(entry) {
 
 function dismissFromDraft(url) {
   if (state.labels[url]) state.labels[url].dismissed_at = new Date().toISOString();
-  cardByUrl(url)?.remove();
+  entryCardByUrl(url)?.remove();
   updateColCounts();
-  POST('/api/holdover/dismiss', { url }).catch(() => {});
+  track(POST('/api/holdover/dismiss', { url }).catch(() => {}));
 }
 
 // ── Auto-summarize on draft load ──────────────────────────────────────────
@@ -1256,7 +1277,7 @@ async function regenerateEntry(url) {
   const row = labelRow(url);
   if (!row) return;
 
-  const card = cardByUrl(url);
+  const card = entryCardByUrl(url);
   const btn  = card?.querySelector('[data-action="regen"]');
   if (btn) { btn.disabled = true; btn.classList.add('spinning'); }
 
@@ -1290,7 +1311,7 @@ function declineEntry(url) {
   const row = labelRow(url);
   if (row && row.label !== 'declined') priorLabel[url] = row.label;
   patchLabel(url, { label: 'declined' });
-  cardByUrl(url)?.remove();
+  entryCardByUrl(url)?.remove();
   updateColCounts();
   renderDraftDeclinedDrawer();
 }

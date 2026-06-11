@@ -143,3 +143,46 @@ CREATE TABLE IF NOT EXISTS snapshots (
 );
 
 CREATE INDEX IF NOT EXISTS idx_snapshots_created_at ON snapshots(created_at DESC);
+
+-- ── MIGRATION: single source of truth for article labels ─────────────────────
+-- Replaces the dual-ownership of "section" between scan_assignments and
+-- draft_entries (and folds in holdover_pool). One row per article; the label IS
+-- the state, read and written by both the Scan and Draft screens. summary +
+-- position live here too (draft content), so there is no parallel draft table.
+CREATE TABLE IF NOT EXISTS article_labels (
+  url             TEXT PRIMARY KEY,
+  label           TEXT NOT NULL CHECK (label IN ('this_week', 'considered', 'save_for_future', 'declined')),
+  article_id      UUID,
+  title           TEXT,
+  source_name     TEXT,
+  article_url     TEXT,        -- optional display/export link (overrides url, e.g. free alternative)
+  summary         TEXT,
+  position        INTEGER DEFAULT 0,
+  is_portfolio_flagged BOOLEAN DEFAULT false,
+  is_paywalled    BOOLEAN DEFAULT false,
+  is_manual       BOOLEAN DEFAULT false,
+  first_saved_at  TIMESTAMPTZ NOT NULL DEFAULT NOW(),  -- for holdover-age dismissal
+  dismissed_at    TIMESTAMPTZ,                          -- non-null = dismissed holdover
+  updated_at      TIMESTAMPTZ DEFAULT NOW(),
+  created_at      TIMESTAMPTZ DEFAULT NOW()
+);
+
+CREATE INDEX IF NOT EXISTS idx_article_labels_label ON article_labels(label) WHERE dismissed_at IS NULL;
+CREATE INDEX IF NOT EXISTS idx_article_labels_article_id ON article_labels(article_id);
+
+-- Append-only archive of what was actually sent each week (powers the
+-- "Published — last 4 weeks" tray and the Published badges on scan cards).
+CREATE TABLE IF NOT EXISTS published_entries (
+  id           UUID PRIMARY KEY DEFAULT gen_random_uuid(),
+  week_date    DATE NOT NULL,
+  url          TEXT,
+  article_id   UUID,
+  headline     TEXT,
+  source_name  TEXT,
+  summary      TEXT,
+  position     INTEGER DEFAULT 0,
+  published_at TIMESTAMPTZ DEFAULT NOW()
+);
+
+CREATE INDEX IF NOT EXISTS idx_published_entries_week ON published_entries(week_date DESC);
+CREATE INDEX IF NOT EXISTS idx_published_entries_article ON published_entries(article_id);
