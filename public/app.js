@@ -3,23 +3,111 @@
 const state = {
   articles: [],       // all articles from latest scan
   scanBatch: null,
-  // articleId → 'this_week' | 'considered' | 'save_for_future' | 'declined'
-  assignments: {},
+
+  // SINGLE SOURCE OF TRUTH — mirrors the article_labels table, keyed by url.
+  // Each value: { url, label, article_id, title, source_name, summary, position,
+  //   is_paywalled, is_portfolio_flagged, is_manual, dismissed_at, first_saved_at }
+  // label ∈ 'this_week' | 'considered' | 'save_for_future' | 'declined'
+  // Both the Scan and Draft screens read and write ONLY this map.
+  labels: {},
 
   filters: { source: '', rank: 'all', date: 'all' },
 
   currentDraftDate: null,
-  draft: null,
-  entries: [],
 
   oauthConnected: false,
   currentUser: null,       // { email, name } from Google sign-in
 
-  holdovers: [],           // active (non-dismissed) holdover pool items
-  publishedIds: new Set(), // article_ids ever published in_this_week (for badge)
+  publishedIds: new Set(), // article_ids ever published (for badge)
   recentPublished: [],     // last 4 weeks published entries (for tray)
-  declinedOrder: [],       // article IDs in manual-decline order, newest first
+  declinedOrder: [],       // urls in manual-decline order, newest first
 };
+
+/* ── Label store: the only place curation state is read/written ───────────── */
+
+const LABEL_TO_SECTION = { this_week: 'in_this_week', considered: 'considered', save_for_future: 'save_for_future' };
+const SECTION_TO_LABEL = { in_this_week: 'this_week', considered: 'considered', save_for_future: 'save_for_future' };
+
+function labelOf(url)   { return url ? (state.labels[url]?.label || null) : null; }
+function labelRow(url)  { return url ? (state.labels[url] || null) : null; }
+function activeRows()   { return Object.values(state.labels).filter(r => !r.dismissed_at); }
+function rowsWithLabel(label) { return activeRows().filter(r => r.label === label); }
+
+// Load the entire label set from the server into state.labels (the mirror).
+async function loadLabels() {
+  try {
+    const rows = await GET('/api/labels');
+    state.labels = {};
+    for (const r of rows || []) state.labels[r.url] = r;
+  } catch {}
+}
+
+// Write-through: set/replace a label for a url (used by scan clicks & manual add).
+function setLabel(article, label) {
+  const url = article.url;
+  if (!url) return;
+  const prev = state.labels[url] || {};
+  state.labels[url] = {
+    ...prev,
+    url,
+    label,
+    article_id: article.id ?? article.article_id ?? prev.article_id ?? null,
+    title: article.title ?? prev.title ?? null,
+    source_name: article.source_name ?? prev.source_name ?? null,
+    is_paywalled: article.is_paywalled ?? prev.is_paywalled ?? false,
+    is_portfolio_flagged: article.is_portfolio_flagged ?? prev.is_portfolio_flagged ?? false,
+    dismissed_at: null,
+    first_saved_at: prev.first_saved_at || new Date().toISOString(),
+  };
+  POST('/api/labels', {
+    url, label,
+    title: state.labels[url].title,
+    source_name: state.labels[url].source_name,
+    article_id: state.labels[url].article_id,
+    is_paywalled: state.labels[url].is_paywalled,
+    is_portfolio_flagged: state.labels[url].is_portfolio_flagged,
+  }).catch(() => showToast('⚠ Save failed — reload to resync', 'error'));
+}
+
+// Write-through: remove a label entirely (un-toggling on the scan screen).
+function removeLabel(url) {
+  if (!url) return;
+  delete state.labels[url];
+  DEL(`/api/labels?url=${encodeURIComponent(url)}`)
+    .catch(() => showToast('⚠ Could not remove — reload to resync', 'error'));
+}
+
+// Write-through: patch fields on an existing label row (summary, label, position…).
+function patchLabel(url, fields) {
+  if (!url) return;
+  const prev = state.labels[url];
+  if (prev) state.labels[url] = { ...prev, ...fields };
+  PATCH('/api/labels', { url, ...fields })
+    .catch(() => showToast('⚠ Save failed — reload to resync', 'error'));
+}
+
+// Adapt a label row into the entry shape the draft card builders expect.
+function rowToEntry(r) {
+  return {
+    id: r.url,                                  // DOM key (url is unique & stable)
+    url: r.url,
+    section: LABEL_TO_SECTION[r.label] || r.label,
+    headline: r.title,
+    summary: r.summary,
+    source_name: r.source_name,
+    article_url: r.article_url || r.url,
+    is_paywalled: r.is_paywalled,
+    is_portfolio_flagged: r.is_portfolio_flagged,
+    article_id: r.article_id,
+    position: r.position ?? 0,
+    first_saved_at: r.first_saved_at,
+  };
+}
+
+// Robust card lookup by url (urls contain CSS-significant chars).
+function cardByUrl(url) {
+  return [...document.querySelectorAll('[data-url]')].find(el => el.dataset.url === url) || null;
+}
 
 /* ── Toast notifications ──────────────────────────────────────────────────── */
 
@@ -109,6 +197,7 @@ async function api(method, path, body) {
 
 const GET = (path) => api('GET', path);
 const POST = (path, body) => api('POST', path, body);
+const PATCH = (path, body) => api('PATCH', path, body);
 const PUT = (path, body) => api('PUT', path, body);
 const DEL = (path) => api('DELETE', path);
 
@@ -123,8 +212,10 @@ function showView(name, pushHistory = true) {
   if (pushHistory) history.pushState({ view: name }, '', `#${name}`);
   else             history.replaceState({ view: name }, '', `#${name}`);
 
-  if (name === 'draft') refreshDraftView();
-  if (name === 'scan') renderArticles();
+  // Both Scan and Draft are views of the same label store. Reload it on entry so
+  // the two can never disagree (and so other editors' changes show up).
+  if (name === 'draft') { loadLabels().then(refreshDraftView); }
+  if (name === 'scan')  { loadLabels().then(() => { renderArticles(); updateCounterBar(); updateDraftToolbar(); }); }
   if (name === 'export') refreshExportView();
 }
 
@@ -267,30 +358,35 @@ function hideProgress() {
 
 async function loadLatestArticles(batch) {
   try {
-    const [scanData, holdoverData, publishedData] = await Promise.all([
+    const [scanData, publishedData] = await Promise.all([
       batch ? GET(`/api/articles?batch=${encodeURIComponent(batch)}`) : GET('/api/articles/latest'),
-      GET('/api/holdovers').catch(() => []),
       GET('/api/articles/published?weeks=4').catch(() => ({ allIds: [], recent: [] })),
     ]);
 
     const articles = Array.isArray(scanData) ? scanData : (scanData.articles || []);
     if (!Array.isArray(scanData)) state.scanBatch = scanData.batch;
     state.articles = articles;
-    state.holdovers = holdoverData || [];
     state.publishedIds = new Set(publishedData.allIds || []);
     state.recentPublished = publishedData.recent || [];
 
-    // Start fresh for the new batch, then auto-decline previously-published articles
-    state.assignments = {};
-    for (const id of state.publishedIds) {
-      state.assignments[id] = 'declined';
-    }
-
-    await loadAndMergeAssignments();
+    await loadLabels();
+    renderArticles();
+    updateCounterBar();
+    updateDraftToolbar();
+    updateWeekLabels();
     renderPublishedDrawer();
   } catch (err) {
     setStatus(`Could not load articles: ${err.message}`);
   }
+}
+
+// Holdovers are derived: active considered/save labels whose article isn't in the
+// current scan batch (carried over from a prior week).
+function holdoverRows() {
+  const scanUrls = new Set(state.articles.map(a => a.url));
+  return activeRows()
+    .filter(r => (r.label === 'considered' || r.label === 'save_for_future') && !scanUrls.has(r.url))
+    .sort((a, b) => new Date(a.first_saved_at) - new Date(b.first_saved_at));
 }
 
 // ── Filters ──────────────────────────────────────────────────────────────
@@ -309,10 +405,10 @@ document.getElementById('filter-date').addEventListener('change', e => {
 });
 
 function filteredArticles() {
-  const holdoverIds = new Set(state.holdovers.map(h => h.article_id));
   let arts = [...state.articles]
-    .filter(a => state.assignments[a.id] !== 'declined')
-    .filter(a => !holdoverIds.has(a.id));
+    // Hide explicitly-declined and already-published articles from the main list.
+    .filter(a => labelOf(a.url) !== 'declined')
+    .filter(a => !(state.publishedIds.has(a.id) && !labelOf(a.url)));
   arts.sort((a, b) => (b.relevance_score || 0) - (a.relevance_score || 0));
 
   const { source, rank, date } = state.filters;
@@ -328,38 +424,31 @@ function filteredArticles() {
 
 // ── Assignment ────────────────────────────────────────────────────────────
 
-function setAssignment(articleId, section) {
-  const article = state.articles.find(a => a.id === articleId);
-  if (state.assignments[articleId] === section) {
-    delete state.assignments[articleId];
-    if (article?.url && section !== 'declined') {
-      DEL(`/api/assignments?url=${encodeURIComponent(article.url)}`)
-        .catch(() => showToast('⚠ Could not remove assignment — reload to resync', 'error'));
-    }
+// `article` is the scan article (or a holdover/label-derived object). Toggling the
+// already-active label removes it; otherwise the label is set. Both write through
+// to article_labels immediately — there is no separate draft state to drift from.
+function setAssignment(article, section) {
+  const url = article.url;
+  const current = labelOf(url);
+
+  if (current === section) {
+    removeLabel(url);
   } else {
-    state.assignments[articleId] = section;
-    if (article?.url && section !== 'declined') {
-      POST('/api/assignments', {
-        url: article.url,
-        section,
-        title: article.title,
-        source_name: article.source_name,
-        article_id: article.id,
-      }).catch(() => showToast('⚠ Assignment save failed — reload to resync', 'error'));
+    setLabel(article, section);
+    if (section === 'declined') {
+      state.declinedOrder = [url, ...state.declinedOrder.filter(u => u !== url)];
     }
   }
 
-  const newAssignment = state.assignments[articleId] || null;
-  const card = document.querySelector(`.article-card[data-id="${articleId}"]`);
+  const newLabel = labelOf(url);
+  const card = cardByUrl(url);
 
-  if (section === 'declined' && newAssignment === 'declined') {
-    // Track manual decline order (newest first)
-    state.declinedOrder = [articleId, ...state.declinedOrder.filter(id => id !== articleId)];
+  if (section === 'declined' && newLabel === 'declined') {
     card?.remove();
     renderDeclinedDrawer();
   } else if (card) {
     const colorMap = { this_week: 'sel-green', considered: 'sel-blue', save_for_future: 'sel-purple' };
-    const colorClass = newAssignment ? (colorMap[newAssignment] || '') : '';
+    const colorClass = newLabel ? (colorMap[newLabel] || '') : '';
     card.className = 'article-card' + (colorClass ? ' ' + colorClass : '');
 
     card.querySelectorAll('.assign-btn').forEach(btn => {
@@ -367,9 +456,9 @@ function setAssignment(articleId, section) {
       btn.className = [
         'assign-btn',
         s === 'declined' ? 'decline-btn' : '',
-        s === 'this_week'       && newAssignment === 'this_week'       ? 'active-this-week'  : '',
-        s === 'considered'      && newAssignment === 'considered'      ? 'active-considered' : '',
-        s === 'save_for_future' && newAssignment === 'save_for_future' ? 'active-save'       : '',
+        s === 'this_week'       && newLabel === 'this_week'       ? 'active-this-week'  : '',
+        s === 'considered'      && newLabel === 'considered'      ? 'active-considered' : '',
+        s === 'save_for_future' && newLabel === 'save_for_future' ? 'active-save'       : '',
       ].filter(Boolean).join(' ');
     });
   }
@@ -379,27 +468,11 @@ function setAssignment(articleId, section) {
 }
 
 function updateCounterBar() {
-  // Only count assignments for articles actually visible in the current scan
-  const visibleIds = new Set([
-    ...state.articles.map(a => a.id),
-    ...state.holdovers.map(h => h.article_id),
-  ]);
-  let nThis = 0, nCons = 0, nSave = 0;
-  for (const [id, v] of Object.entries(state.assignments)) {
-    if (!visibleIds.has(id)) continue;
-    if (v === 'this_week') nThis++;
-    else if (v === 'considered') nCons++;
-    else if (v === 'save_for_future') nSave++;
-  }
-
-  // Count holdovers that haven't been explicitly reassigned or dismissed
-  for (const h of state.holdovers) {
-    if (!state.assignments[h.article_id]) {
-      if (h.section === 'considered') nCons++;
-      else if (h.section === 'save_for_future') nSave++;
-    }
-  }
-
+  // Count straight from the single source of truth — these numbers are exactly
+  // what the Draft screen shows, so the two can never disagree.
+  const nThis = rowsWithLabel('this_week').length;
+  const nCons = rowsWithLabel('considered').length;
+  const nSave = rowsWithLabel('save_for_future').length;
   const total = nThis + nCons + nSave;
 
   const bar = document.getElementById('counter-bar');
@@ -417,87 +490,13 @@ function updateCounterBar() {
 }
 
 async function clearCategory(section) {
-  for (const [id, sec] of Object.entries(state.assignments)) {
-    if (sec === section) {
-      // Published articles should return to auto-declined, not back to visible
-      if (state.publishedIds.has(id)) {
-        state.assignments[id] = 'declined';
-      } else {
-        delete state.assignments[id];
-      }
-    }
+  // Drop every label of this category from the store and the table.
+  for (const url of Object.keys(state.labels)) {
+    if (state.labels[url].label === section) delete state.labels[url];
   }
-
-  // For holdover sections, also remove unoverridden holdovers from the UI this session
-  if (section === 'considered' || section === 'save_for_future') {
-    state.holdovers = state.holdovers.filter(h =>
-      h.section !== section || !!state.assignments[h.article_id]
-    );
-  }
-
-  // Remove cleared this_week entries from the draft state so Draft view reflects it
-  if (section === 'this_week') {
-    state.entries = state.entries.filter(e => e.section !== 'in_this_week');
-  }
-
-  DEL(`/api/assignments/category/${section}`).catch(() => {});
+  DEL(`/api/labels/category/${section}`).catch(() => {});
   renderArticles();
   updateDraftToolbar();
-  updateCounterBar();
-}
-
-async function loadAndMergeAssignments() {
-  try {
-    const assignments = await GET('/api/assignments');
-    if (!assignments?.length) {
-      renderArticles();
-      updateDraftToolbar();
-      updateCounterBar();
-      updateWeekLabels();
-      return;
-    }
-
-    const byUrl = {};
-    for (const a of assignments) byUrl[a.url] = a;
-
-    // Apply assignments to articles already in the current scan
-    for (const article of state.articles) {
-      if (byUrl[article.url]) {
-        state.assignments[article.id] = byUrl[article.url].section;
-        delete byUrl[article.url];
-      }
-    }
-
-    // Inject holdovers from previous scans (considered / save_for_future only)
-    for (const [url, a] of Object.entries(byUrl)) {
-      if (a.section === 'considered' || a.section === 'save_for_future') {
-        const holdoverId = a.article_id || url;
-        state.articles.push({
-          id: holdoverId,
-          url,
-          title: a.title || url,
-          source_name: a.source_name || '',
-          relevance_score: null,
-          relevance_tags: [],
-          is_holdover: true,
-        });
-        state.assignments[holdoverId] = a.section;
-      }
-    }
-  } catch {}
-
-  renderArticles();
-  updateDraftToolbar();
-  updateCounterBar();
-  updateWeekLabels();
-}
-
-function syncAssignmentsFromEntries() {
-  for (const entry of state.entries) {
-    if (!entry.article_id) continue;
-    const section = entry.section === 'in_this_week' ? 'this_week' : entry.section;
-    state.assignments[entry.article_id] = draftDeclined.has(entry.id) ? 'declined' : section;
-  }
   updateCounterBar();
 }
 
@@ -506,7 +505,7 @@ function syncAssignmentsFromEntries() {
 function renderArticles() {
   const list = document.getElementById('article-list');
   const articles = filteredArticles();
-  const activeHoldovers = state.holdovers.filter(h => state.assignments[h.article_id] !== 'declined');
+  const activeHoldovers = holdoverRows();
 
   if (!state.articles.length && !activeHoldovers.length) {
     list.innerHTML = '<div class="empty-state">Click <strong>Refresh scan</strong> to fetch articles from all sources.</div>';
@@ -537,7 +536,7 @@ function renderArticles() {
 }
 
 function buildArticleCard(a) {
-  const assignment = state.assignments[a.id] || null;
+  const assignment = labelOf(a.url);
   const isRecommended = (a.relevance_score || 0) >= 0.70 || a.is_portfolio_flagged;
 
   const card = document.createElement('div');
@@ -546,6 +545,7 @@ function buildArticleCard(a) {
     : '';
   card.className = 'article-card' + (colorClass ? ' ' + colorClass : '');
   card.dataset.id = a.id;
+  card.dataset.url = a.url;
 
   const pubDate = a.published_at
     ? new Date(a.published_at).toLocaleDateString('en-US', { month: 'short', day: 'numeric' })
@@ -597,7 +597,7 @@ function buildArticleCard(a) {
   card.querySelectorAll('.assign-btn').forEach(btn => {
     btn.addEventListener('click', e => {
       e.stopPropagation();
-      setAssignment(a.id, btn.dataset.section);
+      setAssignment(a, btn.dataset.section);
     });
   });
 
@@ -611,21 +611,22 @@ function buildArticleCard(a) {
 }
 
 function buildHoldoverCard(h) {
-  const assignment = state.assignments[h.article_id] || null;
-  const effectiveSection = assignment || h.section;
+  // h is a label row (considered/save_for_future) carried over from a prior week.
+  const effectiveSection = h.label;
   const weeksHeld = Math.floor((Date.now() - new Date(h.first_saved_at)) / (7 * 24 * 60 * 60 * 1000));
-  const sectionLabel = h.section === 'considered' ? 'Considered' : 'Save for later';
+  const sectionLabel = h.label === 'considered' ? 'Considered' : 'Save for later';
   const colorClass = { this_week: 'sel-green', considered: 'sel-blue', save_for_future: 'sel-purple' }[effectiveSection] || '';
+  const article = { url: h.url, id: h.article_id, title: h.title, source_name: h.source_name, is_paywalled: h.is_paywalled, is_portfolio_flagged: h.is_portfolio_flagged };
 
   const card = document.createElement('div');
-  card.className = `article-card holdover-card ${h.section === 'considered' ? 'holdover-considered' : 'holdover-save'} ${colorClass}`;
-  card.dataset.id = h.article_id;
-  card.dataset.holdoverId = h.id;
+  card.className = `article-card holdover-card ${h.label === 'considered' ? 'holdover-considered' : 'holdover-save'} ${colorClass}`;
+  card.dataset.id = h.article_id || h.url;
+  card.dataset.url = h.url;
 
   card.innerHTML = `
     <div class="card-top">
       <div class="card-badges"><span class="badge badge-holdover">${escHtml(sectionLabel)} · ${weeksHeld === 0 ? 'new' : weeksHeld + 'w held'}</span></div>
-      <span class="card-headline">${escHtml(h.headline)}</span>
+      <span class="card-headline">${escHtml(h.title || '')}</span>
     </div>
     <div class="assign-btns">
       <button class="assign-btn ${effectiveSection === 'this_week'      ? 'active-this-week'  : ''}" data-section="this_week">This week</button>
@@ -644,9 +645,9 @@ function buildHoldoverCard(h) {
     btn.addEventListener('click', e => {
       e.stopPropagation();
       if (btn.dataset.section === 'dismissed') {
-        dismissHoldoverFromScan(h.id, h.article_id, card);
+        dismissHoldoverFromScan(h.url, card);
       } else {
-        setAssignment(h.article_id, btn.dataset.section);
+        setAssignment(article, btn.dataset.section);
       }
     });
   });
@@ -654,14 +655,12 @@ function buildHoldoverCard(h) {
   return card;
 }
 
-function dismissHoldoverFromScan(holdoverId, articleId, card) {
-  // Remove from active holdovers
-  state.holdovers = state.holdovers.filter(h => h.id !== holdoverId);
+function dismissHoldoverFromScan(url, card) {
+  if (state.labels[url]) state.labels[url].dismissed_at = new Date().toISOString();
   card.remove();
   updateCounterBar();
   updateDraftToolbar();
-  // Persist to server and refresh dismissed tray
-  POST(`/api/holdover/${holdoverId}/dismiss`, {}).catch(() => {});
+  POST('/api/holdover/dismiss', { url }).catch(() => {});
   if (dismissedDrawerOpen) loadAndRenderDismissedDrawer();
 }
 
@@ -731,17 +730,22 @@ function renderDeclinedDrawer() {
   const label = document.getElementById('declined-label');
   const list  = document.getElementById('declined-list');
 
-  const articleById = {};
-  state.articles.forEach(a => { articleById[a.id] = a; });
+  const articleByUrl = {};
+  state.articles.forEach(a => { articleByUrl[a.url] = a; });
 
-  // Manually declined in reverse-chronological order, then auto-declined (published)
-  const manualDeclinedIds = new Set(state.declinedOrder.filter(id => state.assignments[id] === 'declined'));
-  const manuallyDeclined = state.declinedOrder
-    .filter(id => manualDeclinedIds.has(id))
-    .map(id => articleById[id])
-    .filter(Boolean);
+  // Manually declined (label='declined') newest-first, then auto-declined (published, unlabeled).
+  const manualDeclinedUrls = state.declinedOrder.filter(u => labelOf(u) === 'declined');
+  const manualSet = new Set(manualDeclinedUrls);
+  // include any declined rows not captured in declinedOrder (e.g. from another session)
+  for (const r of Object.values(state.labels)) {
+    if (r.label === 'declined' && !manualSet.has(r.url)) { manualDeclinedUrls.push(r.url); manualSet.add(r.url); }
+  }
+  const manuallyDeclined = manualDeclinedUrls.map(u => articleByUrl[u] || (state.labels[u] && {
+    url: u, title: state.labels[u].title, source_name: state.labels[u].source_name,
+  })).filter(Boolean);
+
   const autoDeclined = state.articles.filter(a =>
-    state.assignments[a.id] === 'declined' && !manualDeclinedIds.has(a.id)
+    state.publishedIds.has(a.id) && !labelOf(a.url)
   );
   const declined = [...manuallyDeclined, ...autoDeclined];
 
@@ -765,11 +769,11 @@ function renderDeclinedDrawer() {
     card.innerHTML = `
       <div class="rail-card-title">${escHtml(a.title)}</div>
       <div class="rail-card-meta">${escHtml(a.source_name)}${pubDate ? ' · ' + pubDate : ''}</div>
-      <button class="btn btn-secondary" style="font-size:11px;padding:3px 10px;margin-top:4px" data-restore="${a.id}">Restore</button>
+      <button class="btn btn-secondary" style="font-size:11px;padding:3px 10px;margin-top:4px" data-restore="1">Restore</button>
     `;
     card.querySelector('[data-restore]').addEventListener('click', () => {
-      state.declinedOrder = state.declinedOrder.filter(id => id !== a.id);
-      delete state.assignments[a.id];
+      state.declinedOrder = state.declinedOrder.filter(u => u !== a.url);
+      if (labelOf(a.url) === 'declined') removeLabel(a.url);
       renderArticles();
       updateDraftToolbar();
       updateCounterBar();
@@ -839,12 +843,11 @@ async function loadAndRenderDismissedDrawer() {
       card.innerHTML = `
         <div class="rail-card-title">${escHtml(h.headline)}</div>
         <div class="rail-card-meta">${escHtml(h.source_name || '')} · dismissed ${weeksAgo}w ago</div>
-        <button class="btn btn-secondary" style="font-size:11px;padding:3px 10px;margin-top:4px" data-restore-holdover="${h.id}">Restore</button>
+        <button class="btn btn-secondary" style="font-size:11px;padding:3px 10px;margin-top:4px" data-restore-holdover="1">Restore</button>
       `;
       card.querySelector('[data-restore-holdover]').addEventListener('click', async () => {
-        await POST(`/api/holdover/${h.id}/restore`, {}).catch(() => {});
-        const fresh = await GET('/api/holdovers').catch(() => []);
-        state.holdovers = fresh;
+        await POST('/api/holdover/restore', { url: h.url }).catch(() => {});
+        await loadLabels();
         renderArticles();
         updateCounterBar();
         updateDraftToolbar();
@@ -866,7 +869,7 @@ document.getElementById('dismissed-handle').addEventListener('click', () => {
 // ── Draft toolbar ─────────────────────────────────────────────────────────
 
 function updateDraftToolbar() {
-  const total = Object.values(state.assignments).filter(v => v !== 'declined').length;
+  const total = activeRows().filter(r => r.label !== 'declined').length;
   const btn = document.getElementById('btn-draft');
   if (btn) btn.disabled = total === 0;
 }
@@ -893,17 +896,7 @@ async function addManualUrl() {
     if (!state.articles.find(a => a.url === article.url)) {
       state.articles.unshift(article);
     }
-    state.assignments[article.id] = 'this_week';
-    // Persist the assignment — manual adds bypassed setAssignment so we save explicitly
-    if (article.id && article.url) {
-      POST('/api/assignments', {
-        url: article.url,
-        section: 'this_week',
-        title: article.title,
-        source_name: article.source_name,
-        article_id: article.id,
-      }).catch(() => showToast('⚠ Assignment save failed — reload to resync', 'error'));
-    }
+    setLabel(article, 'this_week');
     renderArticles();
     updateDraftToolbar();
     updateCounterBar();
@@ -918,49 +911,11 @@ async function addManualUrl() {
 
 // ── Draft & organize ──────────────────────────────────────────────────────
 
-document.getElementById('btn-draft').addEventListener('click', async () => {
-  // Only draft assignments for articles actually present in the current scan
-  // (or active holdovers) — same visibility filter the counter bar uses. Without
-  // this, stale IDs accumulated in state.assignments (e.g. from prior drafts via
-  // syncAssignmentsFromEntries) leak into the draft, so Scan and Draft disagree.
-  const visibleIds = new Set([
-    ...state.articles.map(a => a.id),
-    ...state.holdovers.map(h => h.article_id),
-  ]);
-  const explicitAssignments = Object.entries(state.assignments)
-    .filter(([articleId, section]) => section !== 'declined' && visibleIds.has(articleId))
-    .map(([articleId, section]) => ({
-      articleId,
-      section: section === 'this_week' ? 'in_this_week' : section,
-    }));
-
-  // Auto-include holdovers not explicitly reassigned or dismissed
-  const explicitIds = new Set(Object.keys(state.assignments));
-  const holdoverCarryOvers = state.holdovers
-    .filter(h => !explicitIds.has(h.article_id))
-    .map(h => ({ articleId: h.article_id, section: h.section }));
-
-  const assignments = [...explicitAssignments, ...holdoverCarryOvers];
-
-  if (!assignments.length) return;
-
-  const btn = document.getElementById('btn-draft');
-  btn.disabled = true;
-  btn.textContent = 'Creating draft…';
-
-  try {
-    const draft = await POST('/api/draft', { assignments });
-    state.currentDraftDate = draft.week_date;
-    state.draft = draft;
-    state.entries = draft.entries || [];
-    syncAssignmentsFromEntries();
-    showView('draft');
-  } catch (err) {
-    alert(`Could not create draft: ${err.message}`);
-  } finally {
-    btn.disabled = false;
-    btn.textContent = 'Draft & organize →';
-  }
+document.getElementById('btn-draft').addEventListener('click', () => {
+  // The Draft screen is just a view of the same labels — no build/reconcile step.
+  if (!activeRows().some(r => r.label !== 'declined')) return;
+  state.currentDraftDate = state.currentDraftDate || getUpcomingFriday();
+  showView('draft');   // showView reloads labels, renders, and auto-summarizes
 });
 
 // ── Week label helpers ────────────────────────────────────────────────────
@@ -990,42 +945,18 @@ function updateWeekLabels() {
 /* ── DRAFT VIEW ──────────────────────────────────────────────────────── */
 
 // Local-session set of entry IDs declined or approved in the draft view
-const draftDeclined = new Set();
-const draftApproved = new Set();
+const draftApproved = new Set();  // session-only: urls toggled "approved" in the draft
 
 let sortables = {};
 let lastAutoSummarizedDate = null;
 
 function refreshDraftView() {
-  if (!state.currentDraftDate) {
-    loadLatestDraft();
-    return;
-  }
+  if (!state.currentDraftDate) state.currentDraftDate = getUpcomingFriday();
   renderDraft();
 }
 
-async function loadLatestDraft() {
-  try {
-    const [drafts, holdoverData] = await Promise.all([
-      GET('/api/drafts'),
-      GET('/api/holdovers').catch(() => []),
-    ]);
-    state.holdovers = holdoverData || [];
-
-    if (drafts?.length) {
-      const latest = drafts[0];
-      const full = await GET(`/api/draft/${latest.week_date}`);
-      state.currentDraftDate = full.week_date;
-      state.draft = full;
-      state.entries = full.entries || [];
-      syncAssignmentsFromEntries();
-      renderDraft();
-    }
-  } catch {}
-}
-
 function renderDraft() {
-  if (!state.currentDraftDate) return;
+  if (!state.currentDraftDate) state.currentDraftDate = getUpcomingFriday();
 
   const d = new Date(state.currentDraftDate + 'T12:00:00');
   const shortLabel = d.toLocaleDateString('en-US', { month: 'short', day: 'numeric' });
@@ -1044,12 +975,13 @@ function renderDraft() {
   autoSummarize();
 }
 
+// Render one Draft column directly from the label store (the single source of truth).
 function renderSection(section) {
   const list = document.getElementById(`list-${section}`);
   list.innerHTML = '';
 
-  const entries = state.entries
-    .filter(e => e.section === section && !draftDeclined.has(e.id))
+  const entries = rowsWithLabel(SECTION_TO_LABEL[section])
+    .map(rowToEntry)
     .sort((a, b) => a.position - b.position);
 
   for (const entry of entries) {
@@ -1163,9 +1095,7 @@ function buildMainEntry(entry) {
       editEl.classList.add('hidden');
       toolbarEl.classList.add('hidden');
       editBtn.textContent = 'Edit';
-      const e = state.entries.find(x => x.id === entry.id);
-      if (e) e.summary = newSummary;
-      PUT(`/api/draft/entry/${entry.id}`, { summary: newSummary }).catch(() => {});
+      patchLabel(entry.url, { summary: newSummary });
     } else {
       editEl.innerHTML = renderSummaryHtml(entry.summary || '');
       editEl.classList.remove('hidden');
@@ -1198,11 +1128,11 @@ function buildConsideredEntry(entry) {
     entry.is_paywalled         ? '<span class="badge badge-paywall"   style="font-size:10px">Paywall</span>'          : '',
   ].filter(Boolean).join('');
 
-  const holdover = state.holdovers.find(h => h.article_id === entry.article_id);
-  const weeksHeld = holdover
-    ? Math.floor((Date.now() - new Date(holdover.first_saved_at)) / (7 * 24 * 60 * 60 * 1000))
+  const row = labelRow(entry.url);
+  const weeksHeld = row?.first_saved_at
+    ? Math.floor((Date.now() - new Date(row.first_saved_at)) / (7 * 24 * 60 * 60 * 1000))
     : 0;
-  const dismissBtn = holdover && weeksHeld >= 4
+  const dismissBtn = weeksHeld >= 4
     ? `<button class="btn-dismiss-entry" data-action="dismiss" title="Held ${weeksHeld} weeks — dismiss from future holdovers">Dismiss ×</button>`
     : '';
 
@@ -1227,11 +1157,9 @@ function buildConsideredEntry(entry) {
 
   const editorEl = card.querySelector('.entry-summary-considered');
   if (editorEl) {
-    editorEl.addEventListener('blur', async () => {
+    editorEl.addEventListener('blur', () => {
       const newSummary = sanitizeSummaryHtml(editorEl.innerHTML);
-      const e = state.entries.find(x => x.id === entry.id);
-      if (e) e.summary = newSummary;
-      await PUT(`/api/draft/entry/${entry.id}`, { summary: newSummary }).catch(() => {});
+      patchLabel(entry.url, { summary: newSummary });
     });
     editorEl.addEventListener('keydown', e => {
       if (e.key === 'Enter' && !e.shiftKey) { e.preventDefault(); editorEl.blur(); }
@@ -1241,9 +1169,9 @@ function buildConsideredEntry(entry) {
   card.querySelector('[data-action="regen"]')?.addEventListener('click', () => regenerateEntry(entry.id));
   card.querySelector('[data-action="decline"]')?.addEventListener('click', () => declineEntry(entry.id));
 
-  if (holdover && weeksHeld >= 4) {
+  if (weeksHeld >= 4) {
     card.querySelector('[data-action="dismiss"]')?.addEventListener('click', () => {
-      dismissFromDraft(entry.id, holdover.id);
+      dismissFromDraft(entry.url);
     });
   }
 
@@ -1255,9 +1183,9 @@ function buildSaveEntry(entry) {
   card.className = 'entry-card entry-card--save';
   card.dataset.id = entry.id;
 
-  const holdover = state.holdovers.find(h => h.article_id === entry.article_id);
-  const weeksHeld = holdover
-    ? Math.floor((Date.now() - new Date(holdover.first_saved_at)) / (7 * 24 * 60 * 60 * 1000))
+  const row = labelRow(entry.url);
+  const weeksHeld = row?.first_saved_at
+    ? Math.floor((Date.now() - new Date(row.first_saved_at)) / (7 * 24 * 60 * 60 * 1000))
     : 0;
 
   card.innerHTML = `
@@ -1266,16 +1194,16 @@ function buildSaveEntry(entry) {
       <div class="entry-save-title">${escHtml(entry.headline)}</div>
       <div class="entry-save-meta">${escHtml(entry.source_name || '')}${weeksHeld > 0 ? ` · ${weeksHeld}w held` : ''}</div>
     </div>
-    ${holdover && weeksHeld >= 4
+    ${weeksHeld >= 4
       ? `<button class="btn-dismiss-entry" data-action="dismiss" title="Held ${weeksHeld} weeks — dismiss">×</button>`
       : ''}
     <button class="btn-decline-entry" data-action="decline" title="Decline">✕</button>
   `;
 
-  if (holdover && weeksHeld >= 4) {
+  if (weeksHeld >= 4) {
     card.querySelector('[data-action="dismiss"]')?.addEventListener('click', e => {
       e.stopPropagation();
-      dismissFromDraft(entry.id, holdover.id);
+      dismissFromDraft(entry.url);
     });
   }
 
@@ -1287,18 +1215,19 @@ function buildSaveEntry(entry) {
   return card;
 }
 
-function dismissFromDraft(entryId, holdoverId) {
-  draftDeclined.add(entryId);
-  document.querySelector(`.entry-card[data-id="${entryId}"]`)?.remove();
-  state.holdovers = state.holdovers.filter(h => h.id !== holdoverId);
+function dismissFromDraft(url) {
+  if (state.labels[url]) state.labels[url].dismissed_at = new Date().toISOString();
+  cardByUrl(url)?.remove();
   updateColCounts();
-  POST(`/api/holdover/${holdoverId}/dismiss`, {}).catch(() => {});
+  POST('/api/holdover/dismiss', { url }).catch(() => {});
 }
 
 // ── Auto-summarize on draft load ──────────────────────────────────────────
 
 async function autoSummarize() {
-  const needsSummary = state.entries.filter(e => !e.summary && !draftDeclined.has(e.id));
+  const needsSummary = activeRows().filter(r =>
+    r.label !== 'declined' && !r.summary
+  );
   if (!needsSummary.length) return;
   if (lastAutoSummarizedDate === state.currentDraftDate) return;
   lastAutoSummarizedDate = state.currentDraftDate;
@@ -1309,9 +1238,8 @@ async function autoSummarize() {
   statusEl.classList.remove('hidden');
 
   try {
-    await POST(`/api/draft/${state.currentDraftDate}/summarize`, {});
-    const fresh = await GET(`/api/draft/${state.currentDraftDate}`);
-    state.entries = fresh.entries || [];
+    await POST('/api/summarize', {});
+    await loadLabels();
     renderSection('in_this_week');
     renderSection('considered');
     renderSection('save_for_future');
@@ -1324,19 +1252,20 @@ async function autoSummarize() {
   statusEl.classList.add('hidden');
 }
 
-async function regenerateEntry(id) {
-  const entry = state.entries.find(e => e.id === id);
-  if (!entry) return;
+async function regenerateEntry(url) {
+  const row = labelRow(url);
+  if (!row) return;
 
-  const card = document.querySelector(`.entry-card[data-id="${id}"]`);
+  const card = cardByUrl(url);
   const btn  = card?.querySelector('[data-action="regen"]');
   if (btn) { btn.disabled = true; btn.classList.add('spinning'); }
 
   try {
-    const updated = await POST(`/api/draft/entry/${id}/regenerate`, {});
-    entry.summary = updated.summary;
+    const updated = await POST('/api/labels/regenerate', { url });
+    if (state.labels[url]) state.labels[url].summary = updated.summary;
+    const section = LABEL_TO_SECTION[row.label];
 
-    if (entry.section === 'in_this_week') {
+    if (section === 'in_this_week') {
       const readEl = card?.querySelector('.entry-summary-read');
       const editEl = card?.querySelector('.entry-summary-editor');
       const html = renderSummaryHtml(updated.summary || '');
@@ -1345,7 +1274,7 @@ async function regenerateEntry(id) {
     } else {
       const editorEl = card?.querySelector('.entry-summary-considered');
       if (editorEl) editorEl.innerHTML = renderSummaryHtml(updated.summary || '');
-      else if (card) renderSection(entry.section);
+      else if (card) renderSection(section);
     }
   } catch (err) {
     alert(`Regenerate failed: ${err.message}`);
@@ -1354,20 +1283,23 @@ async function regenerateEntry(id) {
   }
 }
 
-function declineEntry(id) {
-  draftDeclined.add(id);
-  document.querySelector(`.entry-card[data-id="${id}"]`)?.remove();
+// Declining writes label='declined' to the single store, so the Scan screen
+// reflects it immediately too. We remember the prior label for one-click restore.
+const priorLabel = {};
+function declineEntry(url) {
+  const row = labelRow(url);
+  if (row && row.label !== 'declined') priorLabel[url] = row.label;
+  patchLabel(url, { label: 'declined' });
+  cardByUrl(url)?.remove();
   updateColCounts();
   renderDraftDeclinedDrawer();
 }
 
-function restoreEntry(id) {
-  draftDeclined.delete(id);
-  const entry = state.entries.find(e => e.id === id);
-  if (entry) {
-    const list = document.getElementById(`list-${entry.section}`);
-    if (list) list.appendChild(buildEntryCard(entry));
-  }
+function restoreEntry(url) {
+  const back = priorLabel[url] || 'considered';
+  patchLabel(url, { label: back });
+  delete priorLabel[url];
+  renderSection(LABEL_TO_SECTION[back]);
   updateColCounts();
   renderDraftDeclinedDrawer();
 }
@@ -1375,14 +1307,14 @@ function restoreEntry(id) {
 function updateColCounts() {
   const sections = ['in_this_week', 'considered', 'save_for_future'];
   for (const s of sections) {
-    const n = state.entries.filter(e => e.section === s && !draftDeclined.has(e.id)).length;
-    document.getElementById(`count-${s}`).textContent = n;
+    document.getElementById(`count-${s}`).textContent = rowsWithLabel(SECTION_TO_LABEL[s]).length;
   }
 
+  const declinedCount = rowsWithLabel('declined').length;
   const declinedCountEl = document.getElementById('count-declined');
-  if (declinedCountEl) declinedCountEl.textContent = draftDeclined.size;
+  if (declinedCountEl) declinedCountEl.textContent = declinedCount;
 
-  const n = state.entries.filter(e => e.section === 'in_this_week' && !draftDeclined.has(e.id)).length;
+  const n = rowsWithLabel('this_week').length;
   const warn = document.getElementById('warn-in_this_week');
   if (n < 5 && n > 0) {
     warn.textContent = `${n} items — aim for 5–10`;
@@ -1396,7 +1328,7 @@ function updateColCounts() {
 }
 
 function renderDraftDeclinedDrawer() {
-  const declined = state.entries.filter(e => draftDeclined.has(e.id));
+  const declined = rowsWithLabel('declined').map(rowToEntry);
   const list = document.getElementById('list-declined');
   const countEl = document.getElementById('count-declined');
 
@@ -1408,15 +1340,16 @@ function renderDraftDeclinedDrawer() {
     const card = document.createElement('div');
     card.className = 'entry-card entry-card--save';
     card.dataset.id = entry.id;
+    card.dataset.url = entry.url;
     card.style.opacity = '0.75';
     card.innerHTML = `
       <div class="entry-save-text" style="flex:1;min-width:0">
         <div class="entry-save-title">${escHtml(entry.headline)}</div>
         <div class="entry-save-meta">${escHtml(entry.source_name || '')}</div>
       </div>
-      <button class="btn btn-secondary" style="font-size:11px;padding:3px 10px;flex-shrink:0" data-restore="${entry.id}">Restore</button>
+      <button class="btn btn-secondary" style="font-size:11px;padding:3px 10px;flex-shrink:0" data-restore="1">Restore</button>
     `;
-    card.querySelector('[data-restore]').addEventListener('click', () => restoreEntry(entry.id));
+    card.querySelector('[data-restore]').addEventListener('click', () => restoreEntry(entry.url));
     list.appendChild(card);
   }
 }
@@ -1454,17 +1387,7 @@ document.getElementById('btn-dismiss-old-confirm').addEventListener('click', asy
 
   try {
     const { dismissed } = await POST('/api/holdovers/dismiss-old', { weeks: 4 });
-
-    // Remove dismissed holdovers from state and draft view
-    const cutoff = new Date();
-    cutoff.setDate(cutoff.getDate() - 28);
-    const oldHoldovers = state.holdovers.filter(h => new Date(h.first_saved_at) < cutoff);
-    for (const h of oldHoldovers) {
-      const entry = state.entries.find(e => e.article_id === h.article_id);
-      if (entry) draftDeclined.add(entry.id);
-    }
-    state.holdovers = state.holdovers.filter(h => new Date(h.first_saved_at) >= cutoff);
-
+    await loadLabels();
     renderSection('considered');
     renderSection('save_for_future');
     updateColCounts();
@@ -1598,20 +1521,21 @@ async function onSortEnd(evt) {
   const updates  = [];
 
   for (const section of sections) {
+    const label = SECTION_TO_LABEL[section];
     const list = document.getElementById(`list-${section}`);
     [...list.children].forEach((card, i) => {
-      const id = card.dataset.id;
-      if (!id) return;
-      const entry = state.entries.find(e => e.id === id);
-      if (entry) {
-        const oldSection = entry.section;
-        entry.section  = section;
-        entry.position = i;
-        updates.push({ id, section, position: i });
+      const url = card.dataset.url;
+      if (!url) return;
+      const row = state.labels[url];
+      if (row) {
+        const movedSection = LABEL_TO_SECTION[row.label] !== section;
+        row.label = label;
+        row.position = i;
+        updates.push({ url, label, position: i });
 
         // Rebuild card in place if it moved to a different section type
-        if (oldSection !== section) {
-          const newCard = buildEntryCard(entry);
+        if (movedSection) {
+          const newCard = buildEntryCard(rowToEntry(row));
           list.replaceChild(newCard, card);
         }
       }
@@ -1619,8 +1543,7 @@ async function onSortEnd(evt) {
   }
 
   updateColCounts();
-  syncAssignmentsFromEntries();
-  await POST('/api/draft/reorder', { updates }).catch(() => {});
+  await POST('/api/labels/reorder', { updates }).catch(() => {});
 }
 
 // Regenerate all summaries (manual)
@@ -1638,9 +1561,11 @@ document.getElementById('btn-summarize-all').addEventListener('click', async () 
   });
 
   try {
-    await POST(`/api/draft/${state.currentDraftDate}/summarize`, {});
-    const fresh = await GET(`/api/draft/${state.currentDraftDate}`);
-    state.entries = fresh.entries || [];
+    // Force a fresh pass: clear summaries so /api/summarize regenerates them all.
+    await Promise.all(rowsWithLabel('this_week').concat(rowsWithLabel('considered'), rowsWithLabel('save_for_future'))
+      .map(r => PATCH('/api/labels', { url: r.url, summary: null }).catch(() => {})));
+    await POST('/api/summarize', {});
+    await loadLabels();
     // renderSection replaces DOM, removing old spinning buttons
     renderSection('in_this_week');
     renderSection('considered');
@@ -1662,12 +1587,13 @@ document.getElementById('btn-go-export').addEventListener('click', () => showVie
 
 /* ── PAYWALL MODAL ───────────────────────────────────────────────────── */
 
-let paywallEntryId = null;
+let paywallEntryId = null;   // holds the url of the row being edited
 
-function openPaywallModal(entryId) {
-  const entry = state.entries.find(e => e.id === entryId);
-  if (!entry) return;
-  paywallEntryId = entryId;
+function openPaywallModal(url) {
+  const row = labelRow(url);
+  if (!row) return;
+  paywallEntryId = url;
+  const entry = rowToEntry(row);
 
   document.getElementById('paywall-headline').textContent = entry.headline;
   document.getElementById('paywall-paste').value = '';
@@ -1694,10 +1620,9 @@ document.getElementById('btn-paywall-paste').addEventListener('click', async () 
   btn.textContent = 'Generating…';
 
   try {
-    const updated = await POST(`/api/draft/entry/${paywallEntryId}/regenerate`, { pastedText: text });
-    const entry = state.entries.find(e => e.id === paywallEntryId);
-    if (entry) entry.summary = updated.summary;
-    renderSection(entry?.section || 'in_this_week');
+    const updated = await POST('/api/labels/regenerate', { url: paywallEntryId, pastedText: text });
+    if (state.labels[paywallEntryId]) state.labels[paywallEntryId].summary = updated.summary;
+    renderSection(LABEL_TO_SECTION[labelOf(paywallEntryId)] || 'in_this_week');
     closePaywallModal();
   } catch (err) {
     alert(`Failed: ${err.message}`);
@@ -1714,7 +1639,7 @@ document.getElementById('btn-paywall-search').addEventListener('click', async ()
   btn.textContent = 'Searching…';
 
   try {
-    const result = await POST(`/api/draft/entry/${paywallEntryId}/find-alternative`, {});
+    const result = await POST('/api/labels/find-alternative', { url: paywallEntryId });
     const altDiv = document.getElementById('paywall-alt-result');
 
     if (!result.found) {
@@ -1733,38 +1658,21 @@ document.getElementById('btn-paywall-search').addEventListener('click', async ()
       altDiv.classList.remove('hidden');
 
       document.getElementById('btn-use-alt').addEventListener('click', async () => {
-        await PUT(`/api/draft/entry/${paywallEntryId}`, {
-          source_name: result.source,
-          article_url: result.url,
-          is_paywalled: false,
-        });
-        const entry = state.entries.find(e => e.id === paywallEntryId);
-        if (entry) {
-          entry.source_name = result.source;
-          entry.article_url = result.url;
-          entry.is_paywalled = false;
-        }
-        await POST(`/api/draft/entry/${paywallEntryId}/regenerate`, {});
-        const fresh = await GET(`/api/draft/${state.currentDraftDate}`);
-        state.entries = fresh.entries || [];
+        patchLabel(paywallEntryId, { source_name: result.source, article_url: result.url, is_paywalled: false });
+        await POST('/api/labels/regenerate', { url: paywallEntryId })
+          .then(u => { if (state.labels[paywallEntryId]) state.labels[paywallEntryId].summary = u.summary; })
+          .catch(() => {});
         renderDraft();
         closePaywallModal();
       });
 
-      document.getElementById('btn-link-both').addEventListener('click', async () => {
-        const entry = state.entries.find(e => e.id === paywallEntryId);
-        if (!entry) return;
-        const combinedSource = `${entry.source_name} | ${result.source}`;
-        const combinedUrl = `${entry.article_url} | ${result.url}`;
-        await PUT(`/api/draft/entry/${paywallEntryId}`, {
-          source_name: combinedSource,
-          article_url: combinedUrl,
-        });
-        if (entry) {
-          entry.source_name = combinedSource;
-          entry.article_url = combinedUrl;
-        }
-        renderSection(entry?.section || 'in_this_week');
+      document.getElementById('btn-link-both').addEventListener('click', () => {
+        const row = labelRow(paywallEntryId);
+        if (!row) return;
+        const combinedSource = `${row.source_name} | ${result.source}`;
+        const combinedUrl = `${row.article_url || row.url} | ${result.url}`;
+        patchLabel(paywallEntryId, { source_name: combinedSource, article_url: combinedUrl });
+        renderSection(LABEL_TO_SECTION[labelOf(paywallEntryId)] || 'in_this_week');
         closePaywallModal();
       });
     }
@@ -1781,10 +1689,8 @@ document.getElementById('btn-paywall-manual').addEventListener('click', async ()
   const text = document.getElementById('paywall-manual').value.trim();
   if (!text || !paywallEntryId) return;
 
-  await PUT(`/api/draft/entry/${paywallEntryId}`, { summary: text });
-  const entry = state.entries.find(e => e.id === paywallEntryId);
-  if (entry) entry.summary = text;
-  renderSection(entry?.section || 'in_this_week');
+  patchLabel(paywallEntryId, { summary: text });
+  renderSection(LABEL_TO_SECTION[labelOf(paywallEntryId)] || 'in_this_week');
   closePaywallModal();
 });
 
@@ -1863,10 +1769,8 @@ document.getElementById('btn-mark-sent').addEventListener('click', async () => {
   btn.disabled = true;
   btn.textContent = 'Closing week…';
   try {
-    await POST(`/api/draft/${state.currentDraftDate}/mark-sent`, {});
-    for (const [id, sec] of Object.entries(state.assignments)) {
-      if (sec === 'this_week') delete state.assignments[id];
-    }
+    await POST('/api/mark-sent', { weekDate: state.currentDraftDate });
+    await loadLabels();   // this_week rows were archived + cleared server-side
     updateDraftToolbar();
     updateCounterBar();
     btn.textContent = '✓ Week closed';
@@ -1977,26 +1881,25 @@ function insertLinkInEditor(editorEl) {
   const initialView = ['scan', 'draft', 'export'].includes(hashView) ? hashView : 'scan';
 
   try {
-    const [scanData, holdoverData, publishedData] = await Promise.all([
+    const [scanData, publishedData] = await Promise.all([
       GET('/api/articles/latest'),
-      GET('/api/holdovers').catch(() => []),
       GET('/api/articles/published?weeks=4').catch(() => ({ allIds: [], recent: [] })),
     ]);
-    state.holdovers = holdoverData || [];
     state.publishedIds = new Set(publishedData.allIds || []);
     state.recentPublished = publishedData.recent || [];
+
+    await loadLabels();   // the single source of truth for curation state
 
     if (scanData.articles?.length) {
       state.articles = scanData.articles;
       state.scanBatch = scanData.batch;
-      // Assignments cleared + published auto-declined inside loadAndMergeAssignments flow
-      for (const id of state.publishedIds) {
-        if (state.assignments[id] === undefined) state.assignments[id] = 'declined';
-      }
       setStatus(`Showing last scan — ${scanData.articles.length} articles.`);
-      await loadAndMergeAssignments();
     }
 
+    renderArticles();
+    updateCounterBar();
+    updateDraftToolbar();
+    updateWeekLabels();
     renderPublishedDrawer();
     loadAndRenderDismissedDrawer();
   } catch {}

@@ -138,12 +138,12 @@ async function logAssignmentChange(url, title, oldSection, newSection, user) {
 
 async function createSnapshot(label, user) {
   try {
-    const { data: assignments } = await supabase.from('scan_assignments').select('*');
-    if (!assignments?.length) return null;
+    const { data: rows } = await supabase.from('article_labels').select('*');
+    if (!rows?.length) return null;
     const { data } = await supabase.from('snapshots').insert({
       label,
-      article_count: assignments.length,
-      assignments,
+      article_count: rows.length,
+      assignments: rows,
       created_by: user?.email || 'system',
     }).select().single();
     return data || null;
@@ -153,8 +153,8 @@ async function createSnapshot(label, user) {
 // ── Schema check ──────────────────────────────────────────────────────────────
 
 const REQUIRED_TABLES = [
-  'sources', 'articles', 'drafts', 'draft_entries', 'holdover_pool',
-  'app_settings', 'scan_assignments', 'presence', 'assignment_audit', 'snapshots',
+  'sources', 'articles', 'drafts', 'article_labels', 'published_entries',
+  'app_settings', 'presence', 'assignment_audit', 'snapshots',
 ];
 
 async function checkSchema() {
@@ -356,7 +356,7 @@ app.get('/api/articles', async (req, res) => {
   res.json(data);
 });
 
-// Published article IDs (for badge) + recent list (for tray)
+// Published article IDs (for badge) + recent list (for tray) — from the send archive
 app.get('/api/articles/published', async (req, res) => {
   try {
     const weeks = parseInt(req.query.weeks || '4', 10);
@@ -364,21 +364,16 @@ app.get('/api/articles/published', async (req, res) => {
     cutoff.setDate(cutoff.getDate() - weeks * 7);
 
     const { data: entries, error } = await supabase
-      .from('draft_entries')
-      .select('article_id, headline, source_name, article_url, draft_id')
-      .eq('section', 'in_this_week')
+      .from('published_entries')
+      .select('article_id, headline, source_name, url, week_date')
       .not('article_id', 'is', null);
 
     if (error || !entries?.length) return res.json({ allIds: [], recent: [] });
 
-    const draftIds = [...new Set(entries.map(e => e.draft_id))];
-    const { data: drafts } = await supabase
-      .from('drafts').select('id, week_date').in('id', draftIds);
-
-    const dateMap = Object.fromEntries((drafts || []).map(d => [d.id, d.week_date]));
-    const withDates = entries.map(e => ({ ...e, week_date: dateMap[e.draft_id] }));
-    const allIds = [...new Set(withDates.map(e => e.article_id))];
-    const recent = withDates
+    // shape parity with the old endpoint: `article_url` field name
+    const withUrl = entries.map(e => ({ ...e, article_url: e.url }));
+    const allIds = [...new Set(withUrl.map(e => e.article_id))];
+    const recent = withUrl
       .filter(e => e.week_date && new Date(e.week_date) >= cutoff)
       .sort((a, b) => new Date(b.week_date) - new Date(a.week_date));
 
@@ -485,257 +480,18 @@ app.get('/api/drafts', async (req, res) => {
   res.json(data);
 });
 
-app.get('/api/draft/:weekDate', async (req, res) => {
-  const { data: draft, error } = await supabase
-    .from('drafts')
-    .select('*')
-    .eq('week_date', req.params.weekDate)
-    .single();
+// NOTE: the Draft screen is now just a second view of `article_labels` — there is
+// no separate draft-build step or draft_entries table. Labels are managed by the
+// /api/labels endpoints below (the single source of truth for both screens).
 
-  if (error || !draft) return res.status(404).json({ error: 'Draft not found' });
-
-  const { data: entries } = await supabase
-    .from('draft_entries')
-    .select('*')
-    .eq('draft_id', draft.id)
-    .order('section')
-    .order('position');
-
-  res.json({ ...draft, entries: entries || [] });
-});
-
-// Create draft from article assignments: [{ articleId, section }]
-app.post('/api/draft', async (req, res) => {
-  const { assignments, weekDate } = req.body;
-  if (!assignments?.length) return res.status(400).json({ error: 'No articles assigned' });
-
-  const date = weekDate || getThisFriday();
-
-  // Upsert draft
-  const { data: draft, error: dErr } = await supabase
-    .from('drafts')
-    .upsert({ week_date: date }, { onConflict: 'week_date' })
-    .select()
-    .single();
-
-  if (dErr) return res.status(500).json({ error: dErr.message });
-
-  // Auto-snapshot the curation state before writing the draft
-  await createSnapshot(`Auto-snapshot before draft (${date}) by ${req.user?.name || 'unknown'}`, req.user);
-
-  // Filter to valid UUIDs — non-UUID strings (e.g. holdover fallback IDs) would silently
-  // return nothing from Supabase and cause a misleading "Articles not found" error
-  const UUID_RE = /^[0-9a-f]{8}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{12}$/i;
-  const allIds = assignments.map(a => a.articleId);
-  const validIds = allIds.filter(id => UUID_RE.test(id));
-  const sectionMap = Object.fromEntries(assignments.map(a => [a.articleId, a.section]));
-
-  if (!validIds.length) return res.status(400).json({ error: 'No valid article IDs in assignments' });
-
-  // Fetch articles
-  const { data: articles } = await supabase
-    .from('articles')
-    .select('*')
-    .in('id', validIds);
-
-  if (!articles?.length) return res.status(400).json({ error: 'Articles not found' });
-
-  // Get existing entries
-  const { data: existing } = await supabase
-    .from('draft_entries')
-    .select('id, article_id')
-    .eq('draft_id', draft.id);
-
-  const existingByArticleId = Object.fromEntries((existing || []).map(e => [e.article_id, e.id]));
-
-  // Reconcile: delete entries whose article is no longer in the submitted set so the
-  // draft mirrors current curation instead of accumulating across every "Draft & organize".
-  // Manual entries (no article_id) are preserved.
-  const submittedIds = new Set(allIds);
-  const staleEntryIds = (existing || [])
-    .filter(e => e.article_id && !submittedIds.has(e.article_id))
-    .map(e => e.id);
-  if (staleEntryIds.length) {
-    await supabase.from('draft_entries').delete().in('id', staleEntryIds);
-  }
-  const keptCount = (existing || []).length - staleEntryIds.length;
-
-  // Update section for existing entries whose assignment changed
-  const updatePromises = Object.entries(sectionMap)
-    .filter(([articleId]) => existingByArticleId[articleId] !== undefined)
-    .map(([articleId, section]) =>
-      supabase.from('draft_entries')
-        .update({ section, updated_at: new Date().toISOString() })
-        .eq('id', existingByArticleId[articleId])
-    );
-  if (updatePromises.length > 0) await Promise.all(updatePromises);
-
-  const existingArticleIds = new Set(Object.keys(existingByArticleId));
-
-  const newEntries = articles
-    .filter(a => !existingArticleIds.has(a.id))
-    .map((a, i) => ({
-      draft_id: draft.id,
-      article_id: a.id,
-      section: sectionMap[a.id] || 'in_this_week',
-      position: keptCount + i,
-      headline: a.title,
-      source_name: a.source_name,
-      article_url: a.url,
-      is_portfolio_flagged: a.is_portfolio_flagged || false,
-      is_paywalled: a.is_paywalled || false,
-    }));
-
-  if (newEntries.length > 0) {
-    await supabase.from('draft_entries').insert(newEntries);
-  }
-
-  // Sync holdover pool
-  try {
-    const now = new Date().toISOString();
-    const holdoverOps = articles.map(a => {
-      const section = sectionMap[a.id];
-      if (section === 'in_this_week') {
-        return supabase.from('holdover_pool').delete().eq('article_id', a.id);
-      } else if (section === 'considered' || section === 'save_for_future') {
-        return supabase.from('holdover_pool').upsert({
-          article_id: a.id,
-          headline: a.title,
-          source_name: a.source_name,
-          article_url: a.url,
-          section,
-          dismissed_at: null,
-          updated_at: now,
-        }, { onConflict: 'article_id' });
-      }
-      return null;
-    }).filter(Boolean);
-    if (holdoverOps.length) await Promise.all(holdoverOps);
-  } catch {} // graceful if holdover_pool table not yet created
-
-  // Return full draft
-  const { data: entries } = await supabase
-    .from('draft_entries')
-    .select('*')
-    .eq('draft_id', draft.id)
-    .order('section')
-    .order('position');
-
-  res.json({ ...draft, entries: entries || [] });
-});
-
-// Update entry (summary, section, position)
-app.put('/api/draft/entry/:id', async (req, res) => {
-  const allowed = ['summary', 'headline', 'section', 'position', 'source_name', 'article_url'];
-  const updates = { updated_at: new Date().toISOString() };
-  for (const k of allowed) if (req.body[k] !== undefined) updates[k] = req.body[k];
-
-  const { data, error } = await supabase
-    .from('draft_entries')
-    .update(updates)
-    .eq('id', req.params.id)
-    .select()
-    .single();
-
-  if (error) return res.status(500).json({ error: error.message });
-  res.json(data);
-});
-
-// Reorder entries (batch position update)
-app.post('/api/draft/reorder', async (req, res) => {
-  const { updates } = req.body; // [{ id, section, position }]
-  if (!updates?.length) return res.status(400).json({ error: 'No updates' });
-
-  const newSectionMap = Object.fromEntries(updates.map(u => [u.id, u.section]));
-
-  // Read current sections before updating (needed to detect section changes for holdover sync)
-  let beforeEntries = [];
-  try {
-    const { data } = await supabase
-      .from('draft_entries')
-      .select('id, article_id, section, headline, source_name, article_url')
-      .in('id', updates.map(u => u.id));
-    beforeEntries = data || [];
-  } catch {}
-
-  await Promise.all(updates.map(u =>
-    supabase.from('draft_entries')
-      .update({ section: u.section, position: u.position, updated_at: new Date().toISOString() })
-      .eq('id', u.id)
-  ));
-
-  // Sync holdover pool for section changes
-  try {
-    const ops = beforeEntries
-      .filter(e => e.article_id && newSectionMap[e.id] !== e.section)
-      .map(e => {
-        const newSection = newSectionMap[e.id];
-        if (newSection === 'in_this_week') {
-          return supabase.from('holdover_pool').delete().eq('article_id', e.article_id);
-        } else if (newSection === 'considered' || newSection === 'save_for_future') {
-          return supabase.from('holdover_pool').upsert({
-            article_id: e.article_id,
-            headline: e.headline,
-            source_name: e.source_name,
-            article_url: e.article_url,
-            section: newSection,
-            dismissed_at: null,
-            updated_at: new Date().toISOString(),
-          }, { onConflict: 'article_id' });
-        }
-        return null;
-      }).filter(Boolean);
-    if (ops.length) await Promise.all(ops);
-  } catch {}
-
-  res.json({ ok: true });
-});
-
-// Delete entry from draft
-app.delete('/api/draft/entry/:id', async (req, res) => {
-  const { error } = await supabase.from('draft_entries').delete().eq('id', req.params.id);
-  if (error) return res.status(500).json({ error: error.message });
-  res.json({ ok: true });
-});
-
-// Add manual entry to draft
-app.post('/api/draft/:weekDate/entry/manual', async (req, res) => {
-  const { headline, summary, source_name, article_url, section } = req.body;
-  if (!headline) return res.status(400).json({ error: 'Headline required' });
-
-  const { data: draft } = await supabase.from('drafts').select('id').eq('week_date', req.params.weekDate).single();
-  if (!draft) return res.status(404).json({ error: 'Draft not found' });
-
-  const { data, error } = await supabase.from('draft_entries').insert({
-    draft_id: draft.id,
-    headline,
-    summary: summary || '',
-    source_name: source_name || '',
-    article_url: article_url || '',
-    section: section || 'in_this_week',
-    position: 9999,
-    is_manual: true,
-  }).select().single();
-
-  if (error) return res.status(500).json({ error: error.message });
-  res.json(data);
-});
-
-// ── Holdover Pool ─────────────────────────────────────────────────────────────
-
-app.get('/api/holdovers', async (req, res) => {
-  try {
-    const { data, error } = await supabase
-      .from('holdover_pool').select('*').is('dismissed_at', null)
-      .order('first_saved_at', { ascending: true });
-    res.json(error ? [] : (data || []));
-  } catch { res.json([]); }
-});
+// ── Holdovers (dismissal of carried-over labels) ───────────────────────────────
+// A "holdover" is just a considered/save_for_future row in article_labels whose
+// article isn't in the current scan. Dismissal = setting dismissed_at on that row.
 
 app.get('/api/holdovers/dismissed', async (req, res) => {
   try {
     const { data, error } = await supabase
-      .from('holdover_pool').select('*').not('dismissed_at', 'is', null)
+      .from('article_labels').select('*').not('dismissed_at', 'is', null)
       .order('dismissed_at', { ascending: false }).limit(60);
     res.json(error ? [] : (data || []));
   } catch { res.json([]); }
@@ -747,30 +503,31 @@ app.get('/api/holdovers/dismiss-count', async (req, res) => {
     const cutoff = new Date();
     cutoff.setDate(cutoff.getDate() - weeks * 7);
     const { count, error } = await supabase
-      .from('holdover_pool').select('*', { count: 'exact', head: true })
+      .from('article_labels').select('*', { count: 'exact', head: true })
+      .in('label', ['considered', 'save_for_future'])
       .is('dismissed_at', null).lt('first_saved_at', cutoff.toISOString());
     res.json({ count: error ? 0 : (count || 0) });
   } catch { res.json({ count: 0 }); }
 });
 
-app.post('/api/holdover/:id/dismiss', async (req, res) => {
-  try {
-    const { error } = await supabase.from('holdover_pool')
-      .update({ dismissed_at: new Date().toISOString(), updated_at: new Date().toISOString() })
-      .eq('id', req.params.id);
-    if (error) return res.status(500).json({ error: error.message });
-    res.json({ ok: true });
-  } catch (err) { res.status(500).json({ error: err.message }); }
+app.post('/api/holdover/dismiss', async (req, res) => {
+  const { url } = req.body;
+  if (!url) return res.status(400).json({ error: 'url required' });
+  const { error } = await supabase.from('article_labels')
+    .update({ dismissed_at: new Date().toISOString(), updated_at: new Date().toISOString() })
+    .eq('url', url);
+  if (error) return res.status(500).json({ error: error.message });
+  res.json({ ok: true });
 });
 
-app.post('/api/holdover/:id/restore', async (req, res) => {
-  try {
-    const { error } = await supabase.from('holdover_pool')
-      .update({ dismissed_at: null, updated_at: new Date().toISOString() })
-      .eq('id', req.params.id);
-    if (error) return res.status(500).json({ error: error.message });
-    res.json({ ok: true });
-  } catch (err) { res.status(500).json({ error: err.message }); }
+app.post('/api/holdover/restore', async (req, res) => {
+  const { url } = req.body;
+  if (!url) return res.status(400).json({ error: 'url required' });
+  const { error } = await supabase.from('article_labels')
+    .update({ dismissed_at: null, updated_at: new Date().toISOString() })
+    .eq('url', url);
+  if (error) return res.status(500).json({ error: error.message });
+  res.json({ ok: true });
 });
 
 app.post('/api/holdovers/dismiss-old', async (req, res) => {
@@ -778,10 +535,11 @@ app.post('/api/holdovers/dismiss-old', async (req, res) => {
     const weeks = parseInt(req.body.weeks || '4', 10);
     const cutoff = new Date();
     cutoff.setDate(cutoff.getDate() - weeks * 7);
-    const { data, error } = await supabase.from('holdover_pool')
+    const { data, error } = await supabase.from('article_labels')
       .update({ dismissed_at: new Date().toISOString(), updated_at: new Date().toISOString() })
+      .in('label', ['considered', 'save_for_future'])
       .is('dismissed_at', null).lt('first_saved_at', cutoff.toISOString())
-      .select('id');
+      .select('url');
     if (error) return res.status(500).json({ error: error.message });
     res.json({ dismissed: data?.length || 0 });
   } catch (err) { res.status(500).json({ error: err.message }); }
@@ -789,41 +547,63 @@ app.post('/api/holdovers/dismiss-old', async (req, res) => {
 
 // ── Summarization ─────────────────────────────────────────────────────────────
 
-// Generate summaries for all unsummarized entries in a draft
-app.post('/api/draft/:weekDate/summarize', async (req, res) => {
-  const { data: draft } = await supabase.from('drafts').select('id').eq('week_date', req.params.weekDate).single();
-  if (!draft) return res.status(404).json({ error: 'Draft not found' });
+// Shape an article_labels row into the object the summarizer expects, pulling
+// `preview` from the articles table when available.
+function labelToSummarizerInput(row, previewByUrl) {
+  return {
+    headline: row.title,
+    source_name: row.source_name,
+    article_url: row.article_url || row.url,
+    is_paywalled: row.is_paywalled,
+    preview: previewByUrl[row.url] || '',
+  };
+}
 
-  const { data: entries } = await supabase
-    .from('draft_entries')
+async function previewMap(urls) {
+  if (!urls.length) return {};
+  const { data } = await supabase.from('articles').select('url, preview').in('url', urls);
+  return Object.fromEntries((data || []).map(a => [a.url, a.preview]));
+}
+
+// Generate summaries for all labeled items missing one
+app.post('/api/summarize', async (req, res) => {
+  const { data: rows } = await supabase
+    .from('article_labels')
     .select('*')
-    .eq('draft_id', draft.id)
+    .in('label', ['this_week', 'considered', 'save_for_future'])
     .is('summary', null);
 
-  if (!entries?.length) return res.json({ updated: 0 });
+  if (!rows?.length) return res.json({ updated: 0 });
 
-  const summaries = await generateBatchSummaries(entries);
+  const previews = await previewMap(rows.map(r => r.url));
+  const inputs = rows.map(r => labelToSummarizerInput(r, previews));
+  const summaries = await generateBatchSummaries(inputs);
 
-  const updates = entries.map((e, i) => {
+  const updates = rows.map((r, i) => {
     if (!summaries[i]) return null;
-    return supabase.from('draft_entries').update({ summary: summaries[i], updated_at: new Date().toISOString() }).eq('id', e.id);
+    return supabase.from('article_labels')
+      .update({ summary: summaries[i], updated_at: new Date().toISOString() })
+      .eq('url', r.url);
   }).filter(Boolean);
 
   await Promise.all(updates);
   res.json({ updated: updates.length });
 });
 
-// Regenerate summary for a single entry
-app.post('/api/draft/entry/:id/regenerate', async (req, res) => {
-  const { data: entry } = await supabase.from('draft_entries').select('*').eq('id', req.params.id).single();
-  if (!entry) return res.status(404).json({ error: 'Entry not found' });
+// Regenerate summary for a single labeled item (by url)
+app.post('/api/labels/regenerate', async (req, res) => {
+  const { url, pastedText } = req.body;
+  if (!url) return res.status(400).json({ error: 'url required' });
+  const { data: row } = await supabase.from('article_labels').select('*').eq('url', url).single();
+  if (!row) return res.status(404).json({ error: 'Label not found' });
 
   try {
-    const summary = await generateSummary(entry, req.body.pastedText || null);
+    const previews = await previewMap([url]);
+    const summary = await generateSummary(labelToSummarizerInput(row, previews), pastedText || null);
     const { data, error } = await supabase
-      .from('draft_entries')
+      .from('article_labels')
       .update({ summary, updated_at: new Date().toISOString() })
-      .eq('id', req.params.id)
+      .eq('url', url)
       .select()
       .single();
 
@@ -834,13 +614,16 @@ app.post('/api/draft/entry/:id/regenerate', async (req, res) => {
   }
 });
 
-// Find free alternative for paywalled entry
-app.post('/api/draft/entry/:id/find-alternative', async (req, res) => {
-  const { data: entry } = await supabase.from('draft_entries').select('*').eq('id', req.params.id).single();
-  if (!entry) return res.status(404).json({ error: 'Entry not found' });
+// Find free alternative for a paywalled labeled item (by url)
+app.post('/api/labels/find-alternative', async (req, res) => {
+  const { url } = req.body;
+  if (!url) return res.status(400).json({ error: 'url required' });
+  const { data: row } = await supabase.from('article_labels').select('*').eq('url', url).single();
+  if (!row) return res.status(404).json({ error: 'Label not found' });
 
   try {
-    const result = await findFreeAlternative(entry);
+    const previews = await previewMap([url]);
+    const result = await findFreeAlternative(labelToSummarizerInput(row, previews));
     res.json(result);
   } catch (err) {
     res.status(500).json({ error: err.message });
@@ -849,16 +632,28 @@ app.post('/api/draft/entry/:id/find-alternative', async (req, res) => {
 
 // ── Export ────────────────────────────────────────────────────────────────────
 
-app.get('/api/export/:weekDate/html', async (req, res) => {
-  const { data: draft } = await supabase.from('drafts').select('id, week_date').eq('week_date', req.params.weekDate).single();
-  if (!draft) return res.status(404).json({ error: 'Draft not found' });
-
-  const { data: entries } = await supabase
-    .from('draft_entries')
-    .select('*')
-    .eq('draft_id', draft.id)
-    .eq('section', 'in_this_week')
+// Map article_labels rows to the entry shape used by export/gdoc helpers.
+const LABEL_TO_SECTION = { this_week: 'in_this_week', considered: 'considered', save_for_future: 'save_for_future' };
+function labelRowToEntry(r) {
+  return {
+    section: LABEL_TO_SECTION[r.label] || r.label,
+    headline: r.title,
+    summary: r.summary,
+    source_name: r.source_name,
+    article_url: r.article_url || r.url,
+    position: r.position ?? 0,
+  };
+}
+async function fetchLabeledEntries(labels) {
+  const { data } = await supabase
+    .from('article_labels').select('*')
+    .in('label', labels).is('dismissed_at', null)
     .order('position');
+  return (data || []).map(labelRowToEntry);
+}
+
+app.get('/api/export/:weekDate/html', async (req, res) => {
+  const entries = await fetchLabeledEntries(['this_week']);
 
   const html = entries.map(e => {
     const url = e.article_url || '#';
@@ -873,15 +668,7 @@ app.get('/api/export/:weekDate/html', async (req, res) => {
 });
 
 app.get('/api/export/:weekDate/text', async (req, res) => {
-  const { data: draft } = await supabase.from('drafts').select('id').eq('week_date', req.params.weekDate).single();
-  if (!draft) return res.status(404).json({ error: 'Draft not found' });
-
-  const { data: entries } = await supabase
-    .from('draft_entries')
-    .select('*')
-    .eq('draft_id', draft.id)
-    .eq('section', 'in_this_week')
-    .order('position');
+  const entries = await fetchLabeledEntries(['this_week']);
 
   const text = entries.map(e => {
     // Strip HTML tags; convert <a> links to "text (url)" form
@@ -901,18 +688,10 @@ app.get('/api/export/:weekDate/text', async (req, res) => {
 app.post('/api/export/:weekDate/gdoc', async (req, res) => {
   if (!await isAuthorized()) return res.status(401).json({ error: 'NOT_AUTHORIZED', authUrl: getAuthUrl() });
 
-  const { data: draft } = await supabase.from('drafts').select('id, week_date').eq('week_date', req.params.weekDate).single();
-  if (!draft) return res.status(404).json({ error: 'Draft not found' });
-
-  const { data: entries } = await supabase
-    .from('draft_entries')
-    .select('*')
-    .eq('draft_id', draft.id)
-    .order('section')
-    .order('position');
+  const entries = await fetchLabeledEntries(['this_week', 'considered', 'save_for_future']);
 
   try {
-    const url = await createGoogleDoc(draft.week_date, entries || []);
+    const url = await createGoogleDoc(req.params.weekDate, entries || []);
     res.json({ url });
   } catch (err) {
     if (err.message === 'NOT_AUTHORIZED') {
@@ -954,62 +733,141 @@ app.get('/api/preferences', (req, res) => {
   }
 });
 
-// ── Scan Assignments ──────────────────────────────────────────────────────────
+// ── Article Labels (single source of truth) ─────────────────────────────────────
+// One row per article. `label` is the canonical state read & written by BOTH the
+// Scan and Draft screens. `summary`/`position` are draft content stored alongside.
 
-app.get('/api/assignments', async (req, res) => {
-  const { data, error } = await supabase.from('scan_assignments').select('*');
+const VALID_LABELS = ['this_week', 'considered', 'save_for_future', 'declined'];
+
+app.get('/api/labels', async (req, res) => {
+  const { data, error } = await supabase.from('article_labels').select('*');
   if (error) return res.status(500).json({ error: error.message });
   res.json(data || []);
 });
 
-app.post('/api/assignments', async (req, res) => {
-  const { url, section, title, source_name, article_id } = req.body;
-  if (!url || !section) return res.status(400).json({ error: 'url and section required' });
+// Upsert a label (scan clicks, manual adds). Reactivates a dismissed holdover.
+app.post('/api/labels', async (req, res) => {
+  const { url, label, title, source_name, article_id, summary, position,
+          is_portfolio_flagged, is_paywalled, is_manual } = req.body;
+  if (!url || !label) return res.status(400).json({ error: 'url and label required' });
+  if (!VALID_LABELS.includes(label)) return res.status(400).json({ error: 'Invalid label' });
 
-  // Read old section for audit (best-effort)
-  const { data: existing } = await supabase.from('scan_assignments').select('section').eq('url', url).maybeSingle();
+  const { data: existing } = await supabase.from('article_labels').select('label').eq('url', url).maybeSingle();
+
+  // Only include columns that were provided so we never clobber existing values
+  // (e.g. a summary already written) on a plain label change. first_saved_at is
+  // never sent, so it stays put on update and defaults to NOW() on insert.
+  const row = { url, label, dismissed_at: null, updated_at: new Date().toISOString() };
+  if (title !== undefined) row.title = title;
+  if (source_name !== undefined) row.source_name = source_name;
+  if (article_id !== undefined) row.article_id = article_id;
+  if (summary !== undefined) row.summary = summary;
+  if (position !== undefined) row.position = position;
+  if (is_portfolio_flagged !== undefined) row.is_portfolio_flagged = is_portfolio_flagged;
+  if (is_paywalled !== undefined) row.is_paywalled = is_paywalled;
+  if (is_manual !== undefined) row.is_manual = is_manual;
 
   const { data, error } = await supabase
-    .from('scan_assignments')
-    .upsert({ url, section, title, source_name, article_id, assigned_at: new Date().toISOString() }, { onConflict: 'url' })
-    .select().single();
+    .from('article_labels').upsert(row, { onConflict: 'url' }).select().single();
   if (error) return res.status(500).json({ error: error.message });
 
-  logAssignmentChange(url, title, existing?.section || null, section, req.user);
+  logAssignmentChange(url, title, existing?.label || null, label, req.user);
   res.json(data);
 });
 
-app.delete('/api/assignments', async (req, res) => {
+// Patch draft content / label for one row (summary edit, decline, reorder, headline).
+app.patch('/api/labels', async (req, res) => {
+  const { url } = req.body;
+  if (!url) return res.status(400).json({ error: 'url required' });
+  if (req.body.label && !VALID_LABELS.includes(req.body.label)) {
+    return res.status(400).json({ error: 'Invalid label' });
+  }
+
+  const allowed = ['label', 'summary', 'title', 'source_name', 'article_url', 'is_paywalled', 'position', 'dismissed_at'];
+  const updates = { updated_at: new Date().toISOString() };
+  for (const k of allowed) if (req.body[k] !== undefined) updates[k] = req.body[k];
+
+  let oldLabel = null;
+  if (updates.label) {
+    const { data: existing } = await supabase.from('article_labels').select('label').eq('url', url).maybeSingle();
+    oldLabel = existing?.label || null;
+  }
+
+  const { data, error } = await supabase
+    .from('article_labels').update(updates).eq('url', url).select().single();
+  if (error) return res.status(500).json({ error: error.message });
+
+  if (updates.label && updates.label !== oldLabel) {
+    logAssignmentChange(url, data?.title, oldLabel, updates.label, req.user);
+  }
+  res.json(data);
+});
+
+// Remove a label entirely (un-toggling a section on the scan screen).
+app.delete('/api/labels', async (req, res) => {
   const url = req.query.url ? decodeURIComponent(req.query.url) : null;
   if (!url) return res.status(400).json({ error: 'url required' });
 
-  // Read current for audit (best-effort)
-  const { data: existing } = await supabase.from('scan_assignments').select('section, title').eq('url', url).maybeSingle();
-
-  const { error } = await supabase.from('scan_assignments').delete().eq('url', url);
+  const { data: existing } = await supabase.from('article_labels').select('label, title').eq('url', url).maybeSingle();
+  const { error } = await supabase.from('article_labels').delete().eq('url', url);
   if (error) return res.status(500).json({ error: error.message });
 
-  if (existing) logAssignmentChange(url, existing.title, existing.section, null, req.user);
+  if (existing) logAssignmentChange(url, existing.title, existing.label, null, req.user);
   res.json({ ok: true });
 });
 
-app.delete('/api/assignments/category/:section', async (req, res) => {
-  const valid = ['this_week', 'considered', 'save_for_future'];
-  if (!valid.includes(req.params.section)) return res.status(400).json({ error: 'Invalid section' });
-  const { error } = await supabase.from('scan_assignments').delete().eq('section', req.params.section);
+// Clear a whole category (the "Clear" button on the scan counter bar).
+app.delete('/api/labels/category/:label', async (req, res) => {
+  if (!VALID_LABELS.includes(req.params.label)) return res.status(400).json({ error: 'Invalid label' });
+  const { error } = await supabase.from('article_labels').delete().eq('label', req.params.label);
   if (error) return res.status(500).json({ error: error.message });
   res.json({ ok: true });
 });
 
-// Mark draft as sent: records timestamp + clears this_week assignments (holdovers persist)
-app.post('/api/draft/:weekDate/mark-sent', async (req, res) => {
-  const { error } = await supabase
+// Batch reorder / section move from the Draft screen: [{ url, label, position }]
+app.post('/api/labels/reorder', async (req, res) => {
+  const { updates } = req.body;
+  if (!updates?.length) return res.status(400).json({ error: 'No updates' });
+  await Promise.all(updates.map(u =>
+    supabase.from('article_labels')
+      .update({ label: u.label, position: u.position, updated_at: new Date().toISOString() })
+      .eq('url', u.url)
+  ));
+  res.json({ ok: true });
+});
+
+// Mark sent: archive this week's items to published_entries, then clear them.
+// Considered / save_for_future labels persist as holdovers.
+app.post('/api/mark-sent', async (req, res) => {
+  const weekDate = req.body.weekDate || getThisFriday();
+
+  const { error: dErr } = await supabase
     .from('drafts')
-    .update({ sent_at: new Date().toISOString() })
-    .eq('week_date', req.params.weekDate);
-  if (error) return res.status(500).json({ error: error.message });
-  await supabase.from('scan_assignments').delete().eq('section', 'this_week');
-  res.json({ ok: true });
+    .upsert({ week_date: weekDate, sent_at: new Date().toISOString() }, { onConflict: 'week_date' });
+  if (dErr) return res.status(500).json({ error: dErr.message });
+
+  const { data: thisWeek } = await supabase
+    .from('article_labels').select('*').eq('label', 'this_week').is('dismissed_at', null)
+    .order('position');
+
+  if (thisWeek?.length) {
+    // refresh this week's archive (idempotent re-send) then insert
+    await supabase.from('published_entries').delete().eq('week_date', weekDate);
+    const rows = thisWeek.map(r => ({
+      week_date: weekDate,
+      url: r.url,
+      article_id: r.article_id,
+      headline: r.title,
+      source_name: r.source_name,
+      summary: r.summary,
+      position: r.position ?? 0,
+    }));
+    const { error: pErr } = await supabase.from('published_entries').insert(rows);
+    if (pErr) return res.status(500).json({ error: pErr.message });
+  }
+
+  await supabase.from('article_labels').delete().eq('label', 'this_week');
+  res.json({ ok: true, archived: thisWeek?.length || 0 });
 });
 
 // ── Presence ──────────────────────────────────────────────────────────────────
@@ -1064,10 +922,10 @@ app.post('/api/snapshots/:id/restore', async (req, res) => {
     // Auto-snapshot current state before restoring so it's always recoverable
     await createSnapshot(`Auto-saved before restore by ${req.user.name}`, req.user);
 
-    // Replace all current assignments with the snapshot
-    await supabase.from('scan_assignments').delete().neq('url', '');
+    // Replace all current labels with the snapshot
+    await supabase.from('article_labels').delete().neq('url', '');
     if (assignments.length > 0) {
-      await supabase.from('scan_assignments').insert(assignments);
+      await supabase.from('article_labels').insert(assignments);
     }
 
     logAssignmentChange('*', 'Snapshot restore', null, snapshot.label, req.user);
