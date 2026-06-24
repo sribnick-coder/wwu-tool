@@ -11,7 +11,12 @@ const state = {
   // Both the Scan and Draft screens read and write ONLY this map.
   labels: {},
 
-  filters: { source: '', rank: 'all', date: 'all' },
+  filters: { rank: 'all', date: 'all' },
+
+  selectedSources: new Set(), // empty = all sources shown
+  sourceSearch: '',           // panel search box (filters which sources are listed)
+  sourceCategory: {},         // source_name → category (from /api/sources)
+  sourceUsage: {},            // source_name → last sent-newsletter week_date (ISO)
 
   currentDraftDate: null,
 
@@ -388,6 +393,7 @@ async function loadLatestArticles(batch) {
     state.recentPublished = publishedData.recent || [];
 
     await loadLabels();
+    await loadSourceMeta();
     renderArticles();
     updateCounterBar();
     updateDraftToolbar();
@@ -409,8 +415,12 @@ function holdoverRows() {
 
 // ── Filters ──────────────────────────────────────────────────────────────
 
-document.getElementById('filter-source').addEventListener('input', e => {
-  state.filters.source = e.target.value.toLowerCase();
+document.getElementById('source-search').addEventListener('input', e => {
+  state.sourceSearch = e.target.value.toLowerCase();
+  renderSourcePanel();
+});
+document.getElementById('source-clear').addEventListener('click', () => {
+  state.selectedSources.clear();
   renderArticles();
 });
 document.getElementById('filter-rank').addEventListener('change', e => {
@@ -429,8 +439,8 @@ function filteredArticles() {
     .filter(a => !(state.publishedIds.has(a.id) && !labelOf(a.url)));
   arts.sort((a, b) => (b.relevance_score || 0) - (a.relevance_score || 0));
 
-  const { source, rank, date } = state.filters;
-  if (source) arts = arts.filter(a => (a.source_name || '').toLowerCase().includes(source));
+  const { rank, date } = state.filters;
+  if (state.selectedSources.size) arts = arts.filter(a => state.selectedSources.has(a.source_name));
   if (rank === 'recommended') arts = arts.filter(a => (a.relevance_score || 0) >= 0.70 || a.is_portfolio_flagged);
   if (rank === 'good')        arts = arts.filter(a => (a.relevance_score || 0) >= 0.50);
   if (date !== 'all') {
@@ -518,12 +528,113 @@ async function clearCategory(section) {
   updateCounterBar();
 }
 
+// ── Source filter panel ─────────────────────────────────────────────────────
+
+const CATEGORY_LABELS = {
+  publication: 'Publications', 'think-tank': 'Think tanks',
+  newsletter: 'Newsletters', government: 'Government', other: 'Other',
+};
+const CATEGORY_ORDER = ['publication', 'think-tank', 'newsletter', 'government', 'other'];
+
+// Load source categories (for grouping) + sent-newsletter usage (for diversity
+// badges). Cheap, static-ish — refreshed on scan load and after mark-sent.
+async function loadSourceMeta() {
+  try {
+    const [sources, usage] = await Promise.all([
+      GET('/api/sources').catch(() => []),
+      GET('/api/sources/usage').catch(() => ({})),
+    ]);
+    state.sourceCategory = {};
+    for (const s of sources || []) state.sourceCategory[s.name] = s.category || 'other';
+    state.sourceUsage = usage || {};
+  } catch {}
+}
+
+// Diversity badge: how recently this source last appeared in a SENT newsletter.
+function sourceUsageClass(name) {
+  const wk = state.sourceUsage[name];
+  if (!wk) return 'usage-none';
+  const days = (Date.now() - new Date(wk).getTime()) / 86400000;
+  if (days <= 7) return 'usage-week';
+  if (days <= 30) return 'usage-month';
+  return 'usage-none';
+}
+function usageTitle(name) {
+  const wk = state.sourceUsage[name];
+  if (!wk) return 'Not used in a recent newsletter';
+  return `Last published in newsletter: ${wk}`;
+}
+
+function renderSourcePanel() {
+  const container = document.getElementById('source-list');
+  if (!container) return;
+
+  // Count per source over the current rank/date filter, independent of the
+  // source selection so toggling a source doesn't change the displayed counts.
+  let counted = [...state.articles]
+    .filter(a => labelOf(a.url) !== 'declined')
+    .filter(a => !(state.publishedIds.has(a.id) && !labelOf(a.url)));
+  const { rank, date } = state.filters;
+  if (rank === 'recommended') counted = counted.filter(a => (a.relevance_score || 0) >= 0.70 || a.is_portfolio_flagged);
+  else if (rank === 'good')   counted = counted.filter(a => (a.relevance_score || 0) >= 0.50);
+  if (date !== 'all') {
+    const cutoff = new Date(); cutoff.setDate(cutoff.getDate() - parseInt(date));
+    counted = counted.filter(a => !a.published_at || new Date(a.published_at) >= cutoff);
+  }
+
+  const counts = {};
+  for (const a of counted) {
+    const s = a.source_name || 'Unknown';
+    counts[s] = (counts[s] || 0) + 1;
+  }
+
+  const groups = {};
+  for (const name of Object.keys(counts)) {
+    const cat = state.sourceCategory[name] || 'other';
+    (groups[cat] ||= []).push(name);
+  }
+
+  const search = state.sourceSearch;
+  let html = '';
+  let anyShown = false;
+  for (const cat of CATEGORY_ORDER) {
+    const names = (groups[cat] || [])
+      .filter(n => !search || n.toLowerCase().includes(search))
+      .sort((a, b) => a.localeCompare(b));
+    if (!names.length) continue;
+    html += `<div class="source-group-label">${CATEGORY_LABELS[cat]}</div>`;
+    for (const name of names) {
+      anyShown = true;
+      const sel = state.selectedSources.has(name);
+      html += `<button class="source-row${sel ? ' selected' : ''}" data-source="${escHtml(name)}">
+        <span class="usage-dot ${sourceUsageClass(name)}" title="${escHtml(usageTitle(name))}"></span>
+        <span class="source-row-name">${escHtml(name)}</span>
+        <span class="source-row-count">${counts[name]}</span>
+      </button>`;
+    }
+  }
+  container.innerHTML = anyShown ? html : '<div class="source-empty">No sources in this scan.</div>';
+
+  container.querySelectorAll('.source-row').forEach(btn => {
+    btn.addEventListener('click', () => {
+      const name = btn.dataset.source;
+      if (state.selectedSources.has(name)) state.selectedSources.delete(name);
+      else state.selectedSources.add(name);
+      renderArticles();
+    });
+  });
+
+  document.getElementById('source-clear').classList.toggle('hidden', state.selectedSources.size === 0);
+}
+
 // ── Article cards ─────────────────────────────────────────────────────────
 
 function renderArticles() {
   const list = document.getElementById('article-list');
   const articles = filteredArticles();
   const activeHoldovers = holdoverRows();
+
+  renderSourcePanel();
 
   if (!state.articles.length && !activeHoldovers.length) {
     list.innerHTML = '<div class="empty-state">Click <strong>Refresh scan</strong> to fetch articles from all sources.</div>';
@@ -1910,6 +2021,7 @@ function insertLinkInEditor(editorEl) {
     state.recentPublished = publishedData.recent || [];
 
     await loadLabels();   // the single source of truth for curation state
+    await loadSourceMeta();
 
     if (scanData.articles?.length) {
       state.articles = scanData.articles;

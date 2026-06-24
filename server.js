@@ -7,6 +7,7 @@ const fetch = require('node-fetch');
 const { runScan } = require('./services/scanner');
 const { rankArticles } = require('./services/ranker');
 const { generateSummary, generateBatchSummaries, findFreeAlternative } = require('./services/summarizer');
+const { normalizeUrl, fetchArticle } = require('./services/extractor');
 const { getAuthUrl, exchangeCode, createGoogleDoc, isAuthorized } = require('./services/gdrive');
 const { getLoginUrl, exchangeLoginCode, isAllowedUser } = require('./services/auth');
 const supabase = require('./services/db');
@@ -257,6 +258,27 @@ app.get('/api/sources', async (req, res) => {
   res.json(data);
 });
 
+// Per-source usage: most recent Friday-newsletter (published_entries) appearance,
+// keyed by source_name. Powers the diversity badges on the scan source panel so
+// Jamie can see which sources have been drawn on recently vs. are due for a turn.
+app.get('/api/sources/usage', async (req, res) => {
+  try {
+    const { data, error } = await supabase
+      .from('published_entries')
+      .select('source_name, week_date')
+      .not('source_name', 'is', null);
+    if (error) return res.json({});
+    const latest = {};
+    for (const e of data || []) {
+      if (!e.source_name || !e.week_date) continue;
+      if (!latest[e.source_name] || e.week_date > latest[e.source_name]) {
+        latest[e.source_name] = e.week_date;
+      }
+    }
+    res.json(latest);
+  } catch { res.json({}); }
+});
+
 app.post('/api/sources', async (req, res) => {
   const { name, url, type, category } = req.body;
   if (!name || !url || !type || !category) return res.status(400).json({ error: 'Missing fields' });
@@ -406,43 +428,27 @@ app.get('/api/articles/latest', async (req, res) => {
 
 // Manual URL add
 app.post('/api/articles/manual', async (req, res) => {
-  const { url } = req.body;
-  if (!url) return res.status(400).json({ error: 'URL required' });
+  const rawUrl = req.body.url;
+  if (!rawUrl) return res.status(400).json({ error: 'URL required' });
+
+  // Strip Substack referral / utm tracking params so the fetch succeeds and the
+  // same article shared via different links dedupes to one canonical URL.
+  const url = normalizeUrl(rawUrl);
+  const sourceName = (() => {
+    try { return new URL(url).hostname.replace('www.', ''); } catch { return url; }
+  })();
 
   try {
-    const response = await fetch(url, {
-      headers: { 'User-Agent': 'Mozilla/5.0 (compatible; WWU-Tool/1.0)' },
-      timeout: 10000,
-    });
-    const html = await response.text();
-    const { load } = require('cheerio');
-    const $ = load(html);
-
-    // og:title is usually the clean article headline; <title> often includes site name suffix
-    const ogTitle = ($('meta[property="og:title"]').attr('content') || '').trim();
-    const articleH1 = $('article h1, .post h1, [class*="article"] h1, main h1').first().text().trim();
-    const firstH1 = $('h1').first().text().trim();
-    const pageTitle = $('title').text().trim();
-    const title = ogTitle || articleH1 || firstH1 || pageTitle || url;
-
-    // Prefer actual article paragraph text over meta description
-    const articleParas = [];
-    $('article p, .post p, [class*="article"] p, main p').each((_, el) => {
-      const text = $(el).text().trim();
-      if (text.length > 50) articleParas.push(text);
-    });
-    const articleContent = articleParas.slice(0, 3).join(' ').slice(0, 400);
-    const ogDesc = ($('meta[property="og:description"]').attr('content') || '').trim();
-    const metaDesc = ($('meta[name="description"]').attr('content') || '').trim();
-    const description = articleContent || ogDesc || metaDesc;
-
-    const sourceName = new URL(url).hostname.replace('www.', '');
+    // Try the cleaned URL first; if it fails, retry the raw URL as a fallback.
+    let extracted = await fetchArticle(url).catch(() => null);
+    if (!extracted && url !== rawUrl) extracted = await fetchArticle(rawUrl).catch(() => null);
+    if (!extracted) throw new Error('Could not fetch article');
 
     const { data, error } = await supabase.from('articles').upsert({
       source_name: sourceName,
-      title,
+      title: extracted.title,
       url,
-      preview: description,
+      preview: extracted.description,
       is_paywalled: false,
       scan_batch: 'manual',
       scanned_at: new Date().toISOString(),
@@ -453,7 +459,7 @@ app.post('/api/articles/manual', async (req, res) => {
   } catch (err) {
     // Return partial data even on fetch error (user may still want to include it)
     res.json({
-      source_name: new URL(url).hostname.replace('www.', ''),
+      source_name: sourceName,
       title: url,
       url,
       preview: '',

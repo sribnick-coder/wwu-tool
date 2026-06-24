@@ -39,7 +39,6 @@
         <div class="toolbar-right">
           <input id="manual-url-input" type="url" placeholder="Paste a URL to add manually…" class="url-input" />
           <button id="btn-add-url" class="btn btn-secondary">Add</button>
-          <input id="filter-source" type="text" placeholder="Filter source…" class="filter-input" />
           <select id="filter-rank" class="sort-select">
             <option value="all">All ranks</option>
             <option value="recommended">★ Recommended only</option>
@@ -63,6 +62,19 @@
       </div>
 
       <div class="scan-body">
+        <aside id="source-panel" class="source-panel">
+          <div class="source-panel-head">
+            <input id="source-search" type="text" placeholder="Search sources…" class="source-search-input" />
+            <button id="source-clear" class="source-clear-btn hidden">Clear</button>
+          </div>
+          <div class="source-panel-legend">
+            <span><span class="usage-dot usage-week"></span>this wk</span>
+            <span><span class="usage-dot usage-month"></span>≤30d</span>
+            <span><span class="usage-dot usage-none"></span>not recent</span>
+          </div>
+          <div id="source-list" class="source-list"></div>
+        </aside>
+
         <div id="article-list" class="article-list">
           <div class="empty-state">Click <strong>Refresh scan</strong> to fetch articles from all sources.</div>
         </div>

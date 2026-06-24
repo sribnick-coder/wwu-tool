@@ -1,6 +1,7 @@
 const Anthropic = require('@anthropic-ai/sdk');
 const fs = require('fs');
 const path = require('path');
+const { fetchArticleText } = require('./extractor');
 
 const client = new Anthropic();
 
@@ -37,6 +38,8 @@ PREFERENCES CONTEXT:
 
 SUMMARY RULES:
 - 2–4 sentences. No padding.
+- Summarize what THIS SPECIFIC ARTICLE says — its actual reporting, argument, data, or announcement. NEVER write a generic overview of the topic. If you find yourself writing sentences that would be true of any article on this subject, you are doing it wrong: cite the article's specific claims, numbers, names, and conclusions.
+- THE A-STREET ANGLE (required): every entry must make clear why this matters to an A-Street reader — someone investing patient capital in PK-12 education. Surface the implication for the PK-12 market, education policy, school systems, edtech, or the companies/people building in this space. Don't bolt this on as a generic closing line; weave the "so what for PK-12" into the substance.
 - Do NOT repeat or echo the article headline at the start of the summary. Jump straight into the substance.
 - Do NOT open with "Author X argues..." more than once per issue. Vary the opening: lead with the finding, the tension, the data point, the stakes, or the framing.
 - For opinion pieces, surface the counter-perspective or the broader debate the piece enters.
@@ -81,12 +84,27 @@ SOURCE: ${article.source_name}
 URL: ${article.article_url}
 PREVIEW: ${article.preview || '(no preview available)'}`;
   } else {
-    userContent = `Write a Weekly Wrap-Up entry for this article.
+    // Fetch the actual article body so the summary is written from the article,
+    // not just the short RSS/preview snippet (the cause of bland, generic
+    // summaries). Fall back to the preview if the fetch comes up empty.
+    const bodyText = article.article_url ? await fetchArticleText(article.article_url) : '';
+    if (bodyText && bodyText.length > 200) {
+      userContent = `Write a Weekly Wrap-Up entry for this article. Base your summary on the FULL TEXT below — summarize what this article specifically says.
+
+HEADLINE: ${article.headline}
+SOURCE: ${article.source_name}
+URL: ${article.article_url}
+
+FULL TEXT:
+${bodyText.slice(0, 8000)}`;
+    } else {
+      userContent = `Write a Weekly Wrap-Up entry for this article. Only a short preview was available — summarize the article's specifics as best you can and note at the end: [Summary based on headline/preview]
 
 HEADLINE: ${article.headline}
 SOURCE: ${article.source_name}
 URL: ${article.article_url}
 PREVIEW: ${article.preview || '(no preview available)'}`;
+    }
   }
 
   const response = await client.messages.create({
