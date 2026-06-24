@@ -210,12 +210,36 @@ async function api(method, path, body) {
     opts.headers['Content-Type'] = 'application/json';
     opts.body = JSON.stringify(body);
   }
-  const res = await fetch(path, opts);
-  if (!res.ok) {
-    const err = await res.json().catch(() => ({ error: res.statusText }));
-    throw new Error(err.error || res.statusText);
+
+  // GETs are idempotent, so retry transient failures — a Railway redeploy
+  // restart or a momentary server↔Supabase "fetch failed" blip would otherwise
+  // hard-fail the screen. Only retry network errors and 5xx; never 4xx, and
+  // never non-GET (could double-write).
+  const maxAttempts = method === 'GET' ? 3 : 1;
+  let lastErr;
+  for (let attempt = 1; attempt <= maxAttempts; attempt++) {
+    try {
+      const res = await fetch(path, opts);
+      if (!res.ok) {
+        const err = await res.json().catch(() => ({ error: res.statusText }));
+        const e = new Error(err.error || res.statusText);
+        e.status = res.status;
+        // Retry server-side failures (incl. transient Supabase "fetch failed"),
+        // but surface client errors (4xx) immediately.
+        if (res.status >= 500 && attempt < maxAttempts) { lastErr = e; }
+        else throw e;
+      } else {
+        return res.json();
+      }
+    } catch (err) {
+      lastErr = err;
+      // A thrown fetch (server unreachable mid-redeploy) has no .status.
+      if (err.status && err.status < 500) throw err;
+      if (attempt >= maxAttempts) throw err;
+    }
+    await new Promise(r => setTimeout(r, 500 * attempt)); // 0.5s, then 1s
   }
-  return res.json();
+  throw lastErr;
 }
 
 const GET = (path) => api('GET', path);
@@ -400,7 +424,9 @@ async function loadLatestArticles(batch) {
     updateWeekLabels();
     renderPublishedDrawer();
   } catch (err) {
-    setStatus(`Could not load articles: ${err.message}`);
+    // Reached only after retries exhausted (a real outage / redeploy in progress).
+    setStatus('Could not reach the server — it may be redeploying. Wait a few seconds and click Refresh scan.');
+    console.error('loadLatestArticles failed after retries:', err.message);
   }
 }
 
